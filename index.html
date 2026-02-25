@@ -1,0 +1,566 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Razao Geral</title>
+<!-- Tesseract.js for OCR -->
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+<style>
+:root {
+  --bg: #f5f6fa; --surface: #ffffff; --border: #e1e4e8; --text: #1a1a2e; --text-muted: #6b7280;
+  --primary: #2563eb; --primary-hover: #1d4ed8; --success: #059669; --danger: #dc2626; --warning: #d97706;
+  --ativo: #2563eb; --passivo: #dc2626; --pl: #7c3aed; --receita: #059669; --custo: #d97706; --despesa: #e11d48;
+  --radius: 8px; --shadow: 0 1px 3px rgba(0,0,0,0.1); --shadow-lg: 0 4px 12px rgba(0,0,0,0.12);
+}
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:var(--bg);color:var(--text);line-height:1.5}
+button{cursor:pointer;font-family:inherit;font-size:.875rem}
+input,select,textarea{font-family:inherit;font-size:.875rem}
+table{border-collapse:collapse;width:100%}
+th,td{padding:8px 12px;text-align:left;border-bottom:1px solid var(--border)}
+th{background:var(--bg);font-weight:600;font-size:.8rem;text-transform:uppercase;letter-spacing:.5px;color:var(--text-muted);position:sticky;top:0;z-index:1}
+
+/* Layout */
+#app-header{background:var(--surface);border-bottom:1px solid var(--border);padding:12px 24px;display:flex;align-items:center;gap:12px;box-shadow:var(--shadow)}
+#app-header h1{font-size:1.25rem;font-weight:700}
+#app-header h1 span{color:var(--primary)}
+#header-right{display:flex;align-items:center;gap:12px;margin-left:auto}
+#db-status{font-size:.75rem;padding:4px 10px;border-radius:12px}
+#db-status.ok{background:#d1fae5;color:#065f46}
+#db-status.err{background:#fee2e2;color:#991b1b}
+.lang-select{padding:4px 8px;border:1px solid var(--border);border-radius:var(--radius);font-size:.8rem;background:var(--surface)}
+.user-badge{font-size:.8rem;padding:4px 10px;background:var(--bg);border-radius:12px;color:var(--text-muted)}
+#current-user-display{display:flex;align-items:center;gap:8px}
+
+/* Tabs */
+#tab-nav{background:var(--surface);border-bottom:1px solid var(--border);display:flex;padding:0 24px;gap:4px;overflow-x:auto}
+.tab-btn{padding:12px 20px;border:none;background:none;font-size:.875rem;font-weight:500;color:var(--text-muted);border-bottom:2px solid transparent;transition:all .2s;white-space:nowrap}
+.tab-btn:hover{color:var(--text);background:var(--bg)}
+.tab-btn.active{color:var(--primary);border-bottom-color:var(--primary)}
+
+/* Content */
+.tab-content{display:none;padding:24px;max-width:1400px;margin:0 auto}
+.tab-content.active{display:block}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:20px;margin-bottom:16px;box-shadow:var(--shadow)}
+.card h2{font-size:1rem;margin-bottom:12px}
+.card h3{font-size:.9rem;margin-bottom:8px;color:var(--text-muted)}
+.summary-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px;margin-bottom:24px}
+.summary-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:16px;box-shadow:var(--shadow)}
+.summary-card .label{font-size:.75rem;text-transform:uppercase;letter-spacing:.5px;color:var(--text-muted);margin-bottom:4px}
+.summary-card .value{font-size:1.5rem;font-weight:700}
+.summary-card .value.positive{color:var(--success)}
+.summary-card .value.negative{color:var(--danger)}
+
+/* Buttons */
+.btn{padding:8px 16px;border:1px solid var(--border);border-radius:var(--radius);background:var(--surface);color:var(--text);font-weight:500;transition:all .15s}
+.btn:hover{background:var(--bg)}
+.btn-primary{background:var(--primary);color:#fff;border-color:var(--primary)}
+.btn-primary:hover{background:var(--primary-hover)}
+.btn-danger{background:var(--danger);color:#fff;border-color:var(--danger)}
+.btn-danger:hover{background:#b91c1c}
+.btn-success{background:var(--success);color:#fff;border-color:var(--success)}
+.btn-sm{padding:4px 10px;font-size:.8rem}
+.btn-group{display:flex;gap:8px;flex-wrap:wrap}
+
+/* Forms */
+.form-row{display:flex;gap:12px;margin-bottom:12px;flex-wrap:wrap}
+.form-group{display:flex;flex-direction:column;gap:4px}
+.form-group label{font-size:.8rem;font-weight:600;color:var(--text-muted)}
+.form-group input,.form-group select,.form-group textarea{padding:8px 12px;border:1px solid var(--border);border-radius:var(--radius);background:var(--surface)}
+.form-group input:focus,.form-group select:focus,.form-group textarea:focus{outline:none;border-color:var(--primary);box-shadow:0 0 0 3px rgba(37,99,235,.1)}
+
+/* Tables */
+.table-wrap{overflow-x:auto;max-height:500px;overflow-y:auto;border:1px solid var(--border);border-radius:var(--radius)}
+.table-wrap table{margin:0}
+tr:hover{background:#f8f9fa}
+td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
+
+/* Account Tree */
+.tree-item{padding:6px 12px;display:flex;align-items:center;gap:8px;border-bottom:1px solid var(--border);cursor:pointer}
+.tree-item:hover{background:#f8f9fa}
+.tree-item.group{font-weight:600;background:var(--bg)}
+.tree-item .code{font-family:monospace;font-size:.85rem;min-width:100px;color:var(--text-muted)}
+.tree-item .name{flex:1}
+.tree-item .type-badge{font-size:.7rem;padding:2px 8px;border-radius:10px;text-transform:uppercase;letter-spacing:.5px;color:#fff}
+.type-ativo{background:var(--ativo)}.type-passivo{background:var(--passivo)}.type-pl{background:var(--pl)}
+.type-receita{background:var(--receita)}.type-custo{background:var(--custo)}.type-despesa{background:var(--despesa)}
+.tree-toggle{width:20px;text-align:center;font-size:.8rem;color:var(--text-muted)}
+.tree-children{padding-left:20px}
+.tree-children.collapsed{display:none}
+
+/* Journal Lines */
+#je-lines-table{width:100%}
+#je-lines-table td{padding:4px 6px}
+#je-lines-table input,#je-lines-table select{width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:4px}
+.line-num{width:30px;text-align:center;color:var(--text-muted);font-size:.8rem}
+
+/* Sub-tabs */
+.sub-tabs{display:flex;gap:4px;margin-bottom:16px;border-bottom:1px solid var(--border)}
+.sub-tab-btn{padding:8px 16px;border:none;background:none;font-size:.85rem;color:var(--text-muted);border-bottom:2px solid transparent;cursor:pointer}
+.sub-tab-btn:hover{color:var(--text)}
+.sub-tab-btn.active{color:var(--primary);border-bottom-color:var(--primary)}
+.sub-content{display:none}
+.sub-content.active{display:block}
+
+/* Drop Zone */
+.drop-zone{border:2px dashed var(--border);border-radius:var(--radius);padding:40px;text-align:center;color:var(--text-muted);transition:all .2s;cursor:pointer}
+.drop-zone:hover,.drop-zone.dragover{border-color:var(--primary);background:rgba(37,99,235,.05);color:var(--primary)}
+.drop-zone input[type="file"]{display:none}
+
+/* Toolbar */
+.toolbar{display:flex;align-items:center;gap:12px;margin-bottom:16px;flex-wrap:wrap}
+.toolbar input,.toolbar select{padding:8px 12px;border:1px solid var(--border);border-radius:var(--radius)}
+.spacer{flex:1}
+
+/* Status */
+.status-badge{font-size:.75rem;padding:2px 8px;border-radius:10px}
+.status-posted{background:#d1fae5;color:#065f46}
+.status-draft{background:#fef3c7;color:#92400e}
+.status-reversed{background:#fee2e2;color:#991b1b}
+
+/* Modal */
+.modal-overlay{display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.5);z-index:1000;align-items:center;justify-content:center}
+.modal-overlay.show{display:flex}
+.modal{background:var(--surface);border-radius:var(--radius);padding:24px;max-width:700px;width:90%;max-height:80vh;overflow-y:auto;box-shadow:var(--shadow-lg)}
+.modal h2{margin-bottom:16px}
+.modal-footer{display:flex;justify-content:flex-end;gap:8px;margin-top:16px}
+
+/* Reports */
+.report-header{text-align:center;margin-bottom:20px;padding-bottom:12px;border-bottom:2px solid var(--text)}
+.report-header h2{font-size:1.1rem}
+.report-header p{font-size:.85rem;color:var(--text-muted)}
+.report-section{margin-bottom:16px}
+.report-section h3{font-size:.95rem;padding:6px 0;border-bottom:1px solid var(--border);margin-bottom:4px}
+.report-total{font-weight:700;border-top:2px solid var(--text)}
+.report-grand-total{font-weight:700;border-top:3px double var(--text);font-size:1.05rem}
+.indent-1{padding-left:20px}
+.indent-2{padding-left:40px}
+
+/* Login Screen */
+#login-screen{display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:var(--bg);z-index:2000;align-items:center;justify-content:center;flex-direction:column}
+#login-screen h1{font-size:1.5rem;margin-bottom:24px;color:var(--primary)}
+#login-user-list{display:flex;gap:16px;flex-wrap:wrap;justify-content:center}
+.login-user-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:24px;text-align:center;cursor:pointer;min-width:140px;transition:all .2s;box-shadow:var(--shadow)}
+.login-user-card:hover{border-color:var(--primary);box-shadow:var(--shadow-lg)}
+.login-user-avatar{width:60px;height:60px;border-radius:50%;background:var(--primary);color:#fff;display:flex;align-items:center;justify-content:center;font-size:1.5rem;font-weight:700;margin:0 auto 8px}
+.login-user-name{font-weight:600;margin-bottom:4px}
+.login-user-role{font-size:.75rem;color:var(--text-muted)}
+
+/* Camera */
+#camera-video{width:100%;max-height:400px;border-radius:var(--radius);background:#000;display:none}
+#camera-canvas{width:100%;max-height:400px;border-radius:var(--radius);display:none}
+
+/* Toast */
+#toast{position:fixed;bottom:24px;right:24px;padding:12px 20px;border-radius:var(--radius);color:#fff;font-size:.875rem;z-index:2000;transform:translateY(100px);opacity:0;transition:all .3s}
+#toast.show{transform:translateY(0);opacity:1}
+#toast.success{background:var(--success)}
+#toast.error{background:var(--danger)}
+#toast.info{background:var(--primary)}
+
+@media print{
+  #app-header,#tab-nav,.toolbar,.btn-group,.no-print{display:none!important}
+  .tab-content{display:none!important}
+  .tab-content.printing{display:block!important;padding:0}
+  .card{box-shadow:none;border:none}
+  body{background:#fff}
+}
+</style>
+</head>
+<body>
+
+<!-- Login Screen -->
+<div id="login-screen">
+  <h1><span>Razao</span> Geral</h1>
+  <p data-i18n="selectUser" style="margin-bottom:16px;color:var(--text-muted);">Selecione o Usuario</p>
+  <div id="login-user-list"></div>
+</div>
+
+<!-- Main App -->
+<div id="app-main">
+
+<!-- Header -->
+<header id="app-header">
+  <h1><span>Razao</span> Geral</h1>
+  <div id="header-right">
+    <div id="current-user-display"></div>
+    <select class="lang-select" id="lang-selector" onchange="setLanguage(this.value);refreshCurrentTab()">
+      <option value="pt">Portugues</option>
+      <option value="en">English</option>
+      <option value="es">Espanol</option>
+    </select>
+    <span id="db-status" class="ok">DB OK</span>
+  </div>
+</header>
+
+<!-- Tabs -->
+<nav id="tab-nav">
+  <button class="tab-btn active" data-tab="dashboard" data-i18n="tabDashboard">Dashboard</button>
+  <button class="tab-btn" data-tab="accounts" data-i18n="tabAccounts">Plano de Contas</button>
+  <button class="tab-btn" data-tab="journal" data-i18n="tabJournal">Lancamentos</button>
+  <button class="tab-btn" data-tab="capture" data-i18n="tabCapture">Captura</button>
+  <button class="tab-btn" data-tab="import" data-i18n="tabImport">Importacao</button>
+  <button class="tab-btn" data-tab="reports" data-i18n="tabReports">Relatorios</button>
+  <button class="tab-btn" data-tab="settings" data-i18n="tabSettings">Configuracoes</button>
+</nav>
+
+<!-- ===== Dashboard ===== -->
+<div id="tab-dashboard" class="tab-content active">
+  <div class="summary-grid" id="dash-summary"></div>
+  <div class="card">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+      <h2 data-i18n="recentEntries">Lancamentos Recentes</h2>
+      <button class="btn btn-primary btn-sm role-edit" onclick="switchTab('journal')" data-i18n="newEntry">+ Novo Lancamento</button>
+    </div>
+    <div class="table-wrap" style="max-height:350px;">
+      <table><thead><tr>
+        <th data-i18n="date">Data</th><th data-i18n="description">Descricao</th><th data-i18n="reference">Referencia</th>
+        <th class="num" data-i18n="debit">Debito</th><th class="num" data-i18n="credit">Credito</th><th data-i18n="status">Status</th>
+      </tr></thead><tbody id="dash-recent"></tbody></table>
+    </div>
+  </div>
+</div>
+
+<!-- ===== Chart of Accounts ===== -->
+<div id="tab-accounts" class="tab-content">
+  <div class="card">
+    <div class="toolbar">
+      <h2 data-i18n="chartOfAccounts">Plano de Contas</h2>
+      <div class="spacer"></div>
+      <select id="acct-filter-type">
+        <option value="" data-i18n="allTypes">Todos os Tipos</option>
+        <option value="ativo">Ativo</option><option value="passivo">Passivo</option><option value="pl">PL</option>
+        <option value="receita">Receita</option><option value="custo">Custo</option><option value="despesa">Despesa</option>
+      </select>
+      <input type="text" id="acct-search" data-i18n-placeholder="searchAccount" placeholder="Buscar conta...">
+      <button class="btn btn-primary btn-sm role-edit" onclick="showAccountModal()" data-i18n="newAccount">+ Nova Conta</button>
+    </div>
+    <div id="account-tree"></div>
+  </div>
+</div>
+
+<!-- ===== Journal Entries ===== -->
+<div id="tab-journal" class="tab-content">
+  <div class="card role-edit" id="je-form-card">
+    <h2 id="je-form-title" data-i18n="newEntryTitle">Novo Lancamento</h2>
+    <input type="hidden" id="je-edit-id">
+    <div class="form-row">
+      <div class="form-group" style="flex:0 0 160px;"><label data-i18n="date">Data</label><input type="date" id="je-date"></div>
+      <div class="form-group" style="flex:1;"><label data-i18n="description">Descricao</label><input type="text" id="je-desc" placeholder=""></div>
+      <div class="form-group" style="flex:0 0 140px;"><label data-i18n="reference">Referencia</label><input type="text" id="je-ref" placeholder="NF, Doc..."></div>
+      <div class="form-group" style="flex:0 0 100px;"><label data-i18n="currency">Moeda</label><select id="je-currency"></select></div>
+      <div class="form-group" style="flex:0 0 100px;" id="je-rate-group"><label data-i18n="exchangeRate">Taxa</label><input type="number" id="je-rate" step="0.0001" value="1"></div>
+    </div>
+    <!-- Attachment upload for journal entry -->
+    <div class="form-row" style="margin-bottom:8px;">
+      <div class="form-group"><label data-i18n="attachments">Anexos</label><input type="file" id="je-attachment" accept="image/*" multiple></div>
+    </div>
+    <div class="table-wrap" style="max-height:none;overflow:visible;margin-bottom:12px;">
+      <table id="je-lines-table">
+        <thead><tr><th style="width:30px;">#</th><th style="width:40%;" data-i18n="account">Conta</th><th style="width:20%;" data-i18n="debit">Debito</th><th style="width:20%;" data-i18n="credit">Credito</th><th data-i18n="memo">Historico</th><th style="width:30px;"></th></tr></thead>
+        <tbody id="je-lines-body"></tbody>
+        <tfoot><tr>
+          <td></td><td style="text-align:right;font-weight:600;" data-i18n="totals">Totais:</td>
+          <td class="num" id="je-total-debit" style="font-weight:700;">0,00</td>
+          <td class="num" id="je-total-credit" style="font-weight:700;">0,00</td>
+          <td id="je-balance-msg" style="font-size:.8rem;"></td><td></td>
+        </tr></tfoot>
+      </table>
+    </div>
+    <div class="btn-group">
+      <button class="btn btn-sm" onclick="addJELine()" data-i18n="addLine">+ Linha</button>
+      <div class="spacer"></div>
+      <button class="btn btn-sm" onclick="resetJEForm()" data-i18n="clear">Limpar</button>
+      <button class="btn btn-sm" onclick="saveJE('draft')" data-i18n="saveDraft">Rascunho</button>
+      <button class="btn btn-primary btn-sm" onclick="saveJE('posted')" data-i18n="post">Lancar</button>
+    </div>
+  </div>
+  <div class="card">
+    <div class="toolbar">
+      <h2 data-i18n="entryHistory">Historico</h2><div class="spacer"></div>
+      <input type="date" id="je-filter-from"><span>-</span><input type="date" id="je-filter-to">
+      <input type="text" id="je-filter-search" data-i18n-placeholder="search" placeholder="Buscar...">
+      <select id="je-filter-status"><option value="" data-i18n="all">Todos</option><option value="posted" data-i18n="posted">Lancado</option><option value="draft" data-i18n="draft">Rascunho</option><option value="reversed" data-i18n="reversed">Estornado</option></select>
+      <button class="btn btn-sm" onclick="loadEntries()" data-i18n="filter">Filtrar</button>
+    </div>
+    <div class="table-wrap"><table><thead><tr>
+      <th>ID</th><th data-i18n="date">Data</th><th data-i18n="description">Descricao</th><th>Ref</th><th data-i18n="source">Origem</th>
+      <th class="num" data-i18n="debit">Debito</th><th class="num" data-i18n="credit">Credito</th><th data-i18n="currency">Moeda</th>
+      <th data-i18n="status">Status</th><th data-i18n="actions">Acoes</th>
+    </tr></thead><tbody id="je-list"></tbody></table></div>
+  </div>
+</div>
+
+<!-- ===== Capture Tab (Camera + OCR + Messages) ===== -->
+<div id="tab-capture" class="tab-content">
+  <div class="sub-tabs">
+    <button class="sub-tab-btn active" data-subtab="capture-camera" data-i18n="camera">Camera</button>
+    <button class="sub-tab-btn" data-subtab="capture-upload" data-i18n="uploadImage">Enviar Imagem</button>
+    <button class="sub-tab-btn" data-subtab="capture-message" data-i18n="message">Mensagem</button>
+    <button class="sub-tab-btn" data-subtab="capture-whatsapp" data-i18n="whatsapp">WhatsApp</button>
+  </div>
+
+  <!-- Camera -->
+  <div id="capture-camera" class="sub-content active">
+    <div class="card">
+      <h2 data-i18n="captureDocument">Capturar Documento</h2>
+      <video id="camera-video" autoplay playsinline></video>
+      <canvas id="camera-canvas"></canvas>
+      <div class="btn-group" style="margin-top:12px;">
+        <button class="btn btn-primary btn-sm" id="camera-start-btn" onclick="startCamera()" data-i18n="takePhoto">Tirar Foto</button>
+        <button class="btn btn-sm" id="camera-take-btn" onclick="takePhoto()" style="display:none;">&#128247; Capturar</button>
+        <button class="btn btn-sm" id="camera-retake-btn" onclick="retakePhoto()" style="display:none;" data-i18n="retake">Refazer</button>
+        <button class="btn btn-success btn-sm" id="camera-use-btn" onclick="usePhoto()" style="display:none;" data-i18n="usePhoto">Usar Foto</button>
+      </div>
+      <div id="capture-result" style="display:none;margin-top:16px;">
+        <h3 data-i18n="ocrResult">Resultado OCR</h3>
+        <pre id="capture-ocr-text" style="background:var(--bg);padding:12px;border-radius:var(--radius);font-size:.8rem;max-height:200px;overflow:auto;margin-bottom:8px;"></pre>
+        <p><strong>Classification:</strong> <span id="capture-classification"></span></p>
+        <div id="capture-suggested-entries" style="margin-top:12px;"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Image Upload -->
+  <div id="capture-upload" class="sub-content">
+    <div class="card">
+      <h2 data-i18n="uploadImage">Enviar Imagem</h2>
+      <div class="drop-zone" id="capture-drop-zone" onclick="document.getElementById('capture-file-input').click()">
+        <span data-i18n="dragImage">Arraste uma imagem aqui ou clique para selecionar</span>
+        <input type="file" id="capture-file-input" accept="image/*">
+      </div>
+      <div id="capture-image-preview" style="display:none;margin-top:12px;"></div>
+    </div>
+  </div>
+
+  <!-- Message as Entry Source -->
+  <div id="capture-message" class="sub-content">
+    <div class="card">
+      <h2 data-i18n="message">Mensagem</h2>
+      <p style="color:var(--text-muted);margin-bottom:12px;">Type or paste a message describing a transaction. Use keywords: pagamento, venda, compra, despesa with a monetary value (e.g. R$ 500,00).</p>
+      <textarea id="msg-entry-text" rows="4" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:var(--radius);" placeholder="Ex: Pagamento R$ 1.500,00 para fornecedor ABC"></textarea>
+      <div class="btn-group" style="margin-top:8px;">
+        <button class="btn btn-primary btn-sm" onclick="processMessageAsEntry()" data-i18n="processMessage">Processar Mensagem</button>
+      </div>
+      <div id="msg-entry-result" style="display:none;margin-top:16px;"></div>
+    </div>
+  </div>
+
+  <!-- WhatsApp -->
+  <div id="capture-whatsapp" class="sub-content">
+    <div class="card">
+      <h2 data-i18n="whatsappIntegration">Integracao WhatsApp</h2>
+      <div class="sub-tabs">
+        <button class="sub-tab-btn active" data-subtab="wa-webhook" data-i18n="webhookConfig">Webhook</button>
+        <button class="sub-tab-btn" data-subtab="wa-paste" data-i18n="manualPaste">Colar Manual</button>
+      </div>
+      <!-- Webhook Config -->
+      <div id="wa-webhook" class="sub-content active">
+        <div class="form-row">
+          <div class="form-group" style="flex:1;"><label data-i18n="webhookURL">URL Webhook</label><input type="url" id="wh-url" placeholder="https://..."></div>
+          <div class="form-group" style="flex:0 0 200px;"><label data-i18n="verifyToken">Token</label><input type="text" id="wh-token" placeholder="Token..."></div>
+        </div>
+        <div class="btn-group">
+          <button class="btn btn-primary btn-sm" onclick="saveWebhookConfig()" data-i18n="saveWebhook">Salvar</button>
+          <button class="btn btn-sm" onclick="pollWebhookMessages()">Poll Messages</button>
+        </div>
+      </div>
+      <!-- Manual Paste -->
+      <div id="wa-paste" class="sub-content">
+        <div class="form-group" style="margin-bottom:12px;"><label data-i18n="pasteMessage">Colar Mensagem</label>
+          <textarea id="wa-paste-text" rows="4" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:var(--radius);" placeholder="Cole a mensagem aqui..."></textarea>
+        </div>
+        <div class="form-group" style="margin-bottom:12px;"><label data-i18n="pasteOrDropImage">Imagem do WhatsApp</label>
+          <input type="file" id="wa-paste-image" accept="image/*">
+        </div>
+        <button class="btn btn-primary btn-sm" onclick="processManualPaste()" data-i18n="processMessage">Processar</button>
+        <div id="wa-paste-result" style="display:none;margin-top:16px;"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ===== Import ===== -->
+<div id="tab-import" class="tab-content">
+  <div class="sub-tabs">
+    <button class="sub-tab-btn active" data-subtab="import-csv">CSV</button>
+    <button class="sub-tab-btn" data-subtab="import-xml" data-i18n="importNFe">NF-e XML</button>
+    <button class="sub-tab-btn" data-subtab="import-api">API</button>
+    <button class="sub-tab-btn" data-subtab="import-backup" data-i18n="backupRestore">Backup</button>
+  </div>
+  <!-- CSV -->
+  <div id="import-csv" class="sub-content active">
+    <div class="card">
+      <h2 data-i18n="importCSV">Importar CSV</h2>
+      <div class="drop-zone" id="csv-drop-zone" onclick="document.getElementById('csv-file-input').click()">
+        <span data-i18n="dragCSV">Arraste CSV aqui</span><input type="file" id="csv-file-input" accept=".csv,.txt">
+      </div>
+      <div id="csv-preview" style="display:none;margin-top:16px;">
+        <h3 data-i18n="columnMapping">Mapeamento</h3><div class="form-row" id="csv-mapping"></div>
+        <h3 data-i18n="preview" style="margin-top:12px;">Preview</h3>
+        <div class="table-wrap" style="max-height:250px;"><table id="csv-preview-table"></table></div>
+        <div id="csv-validation" style="margin-top:12px;"></div>
+        <div class="btn-group" style="margin-top:12px;">
+          <button class="btn btn-sm" onclick="resetCSVImport()" data-i18n="cancel">Cancelar</button>
+          <button class="btn btn-primary btn-sm" onclick="executeCSVImport()" data-i18n="import_">Importar</button>
+        </div>
+      </div>
+    </div>
+  </div>
+  <!-- NF-e XML -->
+  <div id="import-xml" class="sub-content">
+    <div class="card">
+      <h2 data-i18n="importNFe">Importar NF-e (XML)</h2>
+      <div class="drop-zone" id="nfe-drop-zone" onclick="document.getElementById('nfe-file-input').click()">
+        <span data-i18n="dragXML">Arraste XML de NF-e aqui</span><input type="file" id="nfe-file-input" accept=".xml">
+      </div>
+      <div id="nfe-preview" style="display:none;margin-top:16px;"></div>
+    </div>
+  </div>
+  <!-- API -->
+  <div id="import-api" class="sub-content">
+    <div class="card">
+      <h2 data-i18n="apiIntegration">API</h2>
+      <div class="form-row">
+        <div class="form-group" style="flex:1;"><label data-i18n="endpointURL">URL</label><input type="url" id="api-url" placeholder="https://api.example.com/transactions"></div>
+        <div class="form-group" style="flex:0 0 120px;"><label data-i18n="method">Metodo</label><select id="api-method"><option>GET</option><option>POST</option></select></div>
+      </div>
+      <div class="form-group" style="margin-bottom:12px;"><label data-i18n="headersJSON">Headers (JSON)</label><textarea id="api-headers" rows="3" placeholder='{"Authorization":"Bearer..."}'></textarea></div>
+      <div class="form-group" style="margin-bottom:12px;"><label data-i18n="bodyForPost">Body</label><textarea id="api-body" rows="3"></textarea></div>
+      <div class="btn-group" style="margin-bottom:16px;"><button class="btn btn-sm" onclick="testAPIConnection()" data-i18n="testConnection">Testar</button></div>
+      <div id="api-response" style="display:none;">
+        <h3 data-i18n="apiResponse">Resposta</h3>
+        <pre id="api-response-data" style="background:var(--bg);padding:12px;border-radius:var(--radius);max-height:200px;overflow:auto;font-size:.8rem;margin-bottom:12px;"></pre>
+        <h3 data-i18n="fieldMapping">Mapeamento</h3><div class="form-row" id="api-mapping"></div>
+        <div class="btn-group" style="margin-top:12px;"><button class="btn btn-primary btn-sm" onclick="executeAPIImport()" data-i18n="importFromAPI">Importar</button></div>
+      </div>
+    </div>
+  </div>
+  <!-- Backup -->
+  <div id="import-backup" class="sub-content">
+    <div class="card">
+      <h2 data-i18n="backupRestore">Backup</h2>
+      <p style="color:var(--text-muted);margin-bottom:16px;" data-i18n="backupDesc">Export/restore database.</p>
+      <div class="btn-group" style="margin-bottom:24px;"><button class="btn btn-primary btn-sm" onclick="exportFullBackup()" data-i18n="exportBackupJSON">Export JSON</button></div>
+      <div class="drop-zone" id="backup-drop-zone" onclick="document.getElementById('backup-file-input').click()">
+        <span data-i18n="dragBackup">Drag backup JSON here</span><input type="file" id="backup-file-input" accept=".json">
+      </div>
+      <div id="backup-preview" style="display:none;margin-top:16px;"></div>
+    </div>
+  </div>
+</div>
+
+<!-- ===== Reports ===== -->
+<div id="tab-reports" class="tab-content">
+  <div class="toolbar no-print">
+    <div class="form-group"><label data-i18n="periodFrom">De</label><input type="date" id="rpt-from"></div>
+    <div class="form-group"><label data-i18n="periodTo">Ate</label><input type="date" id="rpt-to"></div>
+    <button class="btn btn-primary btn-sm" onclick="generateReport()" data-i18n="generateReport">Gerar</button>
+  </div>
+  <div class="sub-tabs no-print">
+    <button class="sub-tab-btn active" data-subtab="rpt-balancete" data-i18n="trialBalance">Balancete</button>
+    <button class="sub-tab-btn" data-subtab="rpt-dre" data-i18n="incomeStatement">DRE</button>
+    <button class="sub-tab-btn" data-subtab="rpt-balanco" data-i18n="balanceSheet">Balanco</button>
+    <button class="sub-tab-btn" data-subtab="rpt-fluxo" data-i18n="cashFlow">Fluxo de Caixa</button>
+  </div>
+  <div id="rpt-balancete" class="sub-content active"><div class="card" id="rpt-balancete-content"><p style="color:var(--text-muted);text-align:center;" data-i18n="selectPeriodPrompt">Select period.</p></div></div>
+  <div id="rpt-dre" class="sub-content"><div class="card" id="rpt-dre-content"><p style="color:var(--text-muted);text-align:center;" data-i18n="selectPeriodPrompt">Select period.</p></div></div>
+  <div id="rpt-balanco" class="sub-content"><div class="card" id="rpt-balanco-content"><p style="color:var(--text-muted);text-align:center;" data-i18n="selectPeriodPrompt">Select period.</p></div></div>
+  <div id="rpt-fluxo" class="sub-content"><div class="card" id="rpt-fluxo-content"><p style="color:var(--text-muted);text-align:center;" data-i18n="selectPeriodPrompt">Select period.</p></div></div>
+</div>
+
+<!-- ===== Settings ===== -->
+<div id="tab-settings" class="tab-content">
+  <div class="card">
+    <h2 data-i18n="company">Empresa</h2>
+    <div class="form-row">
+      <div class="form-group" style="flex:1;"><label data-i18n="companyName">Nome</label><input type="text" id="set-company" placeholder="Minha Empresa Ltda"></div>
+      <div class="form-group" style="flex:0 0 160px;"><label data-i18n="fiscalYearStart">Ano Fiscal</label>
+        <select id="set-fiscal-month"><option value="1">Janeiro</option><option value="2">Fevereiro</option><option value="3">Marco</option><option value="4">Abril</option><option value="5">Maio</option><option value="6">Junho</option><option value="7">Julho</option><option value="8">Agosto</option><option value="9">Setembro</option><option value="10">Outubro</option><option value="11">Novembro</option><option value="12">Dezembro</option></select>
+      </div>
+    </div>
+    <button class="btn btn-primary btn-sm" onclick="saveSettings()" style="margin-top:8px;" data-i18n="save">Salvar</button>
+  </div>
+  <div class="card">
+    <h2 data-i18n="exchangeRates">Taxas de Cambio</h2>
+    <p style="color:var(--text-muted);margin-bottom:12px;" data-i18n="baseCurrencyNote">Base: BRL</p>
+    <div class="table-wrap" style="max-height:300px;">
+      <table><thead><tr><th data-i18n="code">Codigo</th><th data-i18n="name">Nome</th><th class="num" data-i18n="rateBRL">Taxa</th><th data-i18n="updated">Atualizado</th><th data-i18n="actions">Acoes</th></tr></thead>
+      <tbody id="currency-list"></tbody></table>
+    </div>
+    <div class="form-row" style="margin-top:12px;">
+      <div class="form-group"><label data-i18n="code">Cod</label><input type="text" id="cur-code" maxlength="3" style="width:80px;text-transform:uppercase;"></div>
+      <div class="form-group"><label data-i18n="name">Nome</label><input type="text" id="cur-name"></div>
+      <div class="form-group"><label>Taxa</label><input type="number" id="cur-rate" step="0.0001"></div>
+      <div class="form-group" style="justify-content:flex-end;"><button class="btn btn-primary btn-sm" onclick="saveCurrency()" data-i18n="addCurrency">Add</button></div>
+    </div>
+  </div>
+  <!-- User Management -->
+  <div class="card role-admin">
+    <h2 data-i18n="userManagement">Gestao de Usuarios</h2>
+    <div class="table-wrap" style="max-height:250px;margin-bottom:12px;">
+      <table><thead><tr><th data-i18n="username">Usuario</th><th data-i18n="role">Papel</th><th>Biometric</th><th data-i18n="actions">Acoes</th></tr></thead>
+      <tbody id="user-list"></tbody></table>
+    </div>
+    <div class="form-row">
+      <div class="form-group"><label data-i18n="username">Usuario</label><input type="text" id="new-username" placeholder="nome"></div>
+      <div class="form-group"><label data-i18n="role">Papel</label>
+        <select id="new-role"><option value="admin" data-i18n="roleAdmin">Acesso Total</option><option value="viewer" data-i18n="roleViewer">Visualizacao</option><option value="entry" data-i18n="roleEntry">Lancamentos</option></select>
+      </div>
+      <div class="form-group" style="justify-content:flex-end;"><button class="btn btn-primary btn-sm" onclick="addNewUser()" data-i18n="addUser">Adicionar</button></div>
+    </div>
+  </div>
+  <div class="card">
+    <h2 data-i18n="dataManagement">Dados</h2>
+    <div class="btn-group">
+      <button class="btn btn-sm" onclick="exportFullBackup()" data-i18n="exportBackup">Backup</button>
+      <button class="btn btn-danger btn-sm role-admin" onclick="clearAllData()" data-i18n="clearAllData">Limpar Tudo</button>
+    </div>
+  </div>
+</div>
+
+</div><!-- end app-main -->
+
+<!-- Modals -->
+<div class="modal-overlay" id="account-modal">
+  <div class="modal">
+    <h2 id="acct-modal-title" data-i18n="newAccountTitle">Nova Conta</h2>
+    <input type="hidden" id="acct-edit-id">
+    <div class="form-row">
+      <div class="form-group" style="flex:0 0 140px;"><label data-i18n="code">Codigo</label><input type="text" id="acct-code" placeholder="1.1.1.01"></div>
+      <div class="form-group" style="flex:1;"><label data-i18n="name">Nome</label><input type="text" id="acct-name"></div>
+    </div>
+    <div class="form-row">
+      <div class="form-group" style="flex:1;"><label data-i18n="type">Tipo</label><select id="acct-type"><option value="ativo">Ativo</option><option value="passivo">Passivo</option><option value="pl">PL</option><option value="receita">Receita</option><option value="custo">Custo</option><option value="despesa">Despesa</option></select></div>
+      <div class="form-group" style="flex:1;"><label data-i18n="parentAccount">Pai</label><input type="text" id="acct-parent" placeholder="1.1.1"></div>
+      <div class="form-group"><label data-i18n="isGroup">Grupo?</label><select id="acct-isgroup"><option value="false" data-i18n="noAnalytical">Nao</option><option value="true" data-i18n="yesSynthetical">Sim</option></select></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-sm" onclick="closeAccountModal()" data-i18n="cancel">Cancelar</button>
+      <button class="btn btn-primary btn-sm" onclick="saveAccount()" data-i18n="save">Salvar</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="entry-modal">
+  <div class="modal">
+    <h2 data-i18n="entryDetails">Detalhes</h2>
+    <div id="entry-modal-content"></div>
+    <div class="modal-footer">
+      <button class="btn btn-sm" onclick="closeEntryModal()" data-i18n="close">Fechar</button>
+      <button class="btn btn-danger btn-sm" id="entry-reverse-btn" onclick="reverseEntry()" data-i18n="reverse">Estornar</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<!-- Load JS modules -->
+<script src="js/i18n.js"></script>
+<script src="js/auth.js"></script>
+<script src="js/capture.js"></script>
+<script src="js/nfe.js"></script>
+<script src="js/whatsapp.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
