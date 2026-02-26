@@ -3,6 +3,7 @@
 let db = null;
 let allAccounts = [];
 let currentViewEntryId = null;
+let currentCompanyId = null;
 
 // ===== Utility =====
 function fmt(n) { return (n || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
@@ -22,21 +23,41 @@ function typeLabel(tp) {
   return t(map[tp] || tp);
 }
 function accountNature(type) { return ['ativo', 'custo', 'despesa'].includes(type) ? 'debit' : 'credit'; }
+function ruleTypeLabel(rt) {
+  const map = { pagamento:'ruleTypePagamento', recebimento:'ruleTypeRecebimento', venda:'ruleTypeVenda', compra:'ruleTypeCompra', despesa:'ruleTypeDespesa', salario:'ruleTypeSalario', aluguel:'ruleTypeAluguel', bancaria:'ruleTypeBancaria', nfe_entrada:'ruleTypeNfeEntrada', nfe_saida:'ruleTypeNfeSaida', nfe_icms:'ruleTypeNfeIcms', nfe_pis:'ruleTypeNfePis', nfe_cofins:'ruleTypeNfeCofins' };
+  return t(map[rt] || rt);
+}
+
+// ===== Theme Toggle =====
+function toggleTheme() {
+  const html = document.documentElement;
+  const current = html.getAttribute('data-theme');
+  const next = current === 'dark' ? 'light' : 'dark';
+  html.setAttribute('data-theme', next);
+  localStorage.setItem('gl_theme', next);
+  document.getElementById('theme-toggle').innerHTML = next === 'dark' ? '&#9788;' : '&#9790;';
+}
+function applyTheme() {
+  const saved = localStorage.getItem('gl_theme') || 'light';
+  document.documentElement.setAttribute('data-theme', saved);
+  document.getElementById('theme-toggle').innerHTML = saved === 'dark' ? '&#9788;' : '&#9790;';
+}
 
 // ===== IndexedDB =====
 function openDB() {
   return new Promise((resolve, reject) => {
-    const req = indexedDB.open('GeneralLedgerDB', 2);
+    const req = indexedDB.open('GeneralLedgerDB', 3);
     req.onerror = () => { document.getElementById('db-status').className = 'err'; document.getElementById('db-status').textContent = t('dbError'); reject(req.error); };
     req.onupgradeneeded = (e) => {
       const d = e.target.result;
+      const oldVer = e.oldVersion;
       if (!d.objectStoreNames.contains('accounts')) {
         const accts = d.createObjectStore('accounts', { keyPath: 'id', autoIncrement: true });
-        accts.createIndex('code', 'code', { unique: true }); accts.createIndex('parentCode', 'parentCode'); accts.createIndex('type', 'type');
+        accts.createIndex('code', 'code'); accts.createIndex('parentCode', 'parentCode'); accts.createIndex('type', 'type'); accts.createIndex('companyId', 'companyId');
       }
       if (!d.objectStoreNames.contains('entries')) {
         const entries = d.createObjectStore('entries', { keyPath: 'id', autoIncrement: true });
-        entries.createIndex('date', 'date'); entries.createIndex('status', 'status');
+        entries.createIndex('date', 'date'); entries.createIndex('status', 'status'); entries.createIndex('companyId', 'companyId');
       }
       if (!d.objectStoreNames.contains('lines')) {
         const lines = d.createObjectStore('lines', { keyPath: 'id', autoIncrement: true });
@@ -55,6 +76,26 @@ function openDB() {
         const att = d.createObjectStore('attachments', { keyPath: 'id', autoIncrement: true });
         att.createIndex('entryId', 'entryId');
       }
+      // v3: companies + rules stores
+      if (!d.objectStoreNames.contains('companies')) {
+        d.createObjectStore('companies', { keyPath: 'id', autoIncrement: true });
+      }
+      if (!d.objectStoreNames.contains('rules')) {
+        const rules = d.createObjectStore('rules', { keyPath: 'id', autoIncrement: true });
+        rules.createIndex('companyId', 'companyId'); rules.createIndex('transactionType', 'transactionType');
+      }
+      // Add companyId index to existing stores if upgrading from v2
+      if (oldVer < 3) {
+        const tx = e.target.transaction;
+        if (d.objectStoreNames.contains('accounts')) {
+          const as = tx.objectStore('accounts');
+          if (!as.indexNames.contains('companyId')) as.createIndex('companyId', 'companyId');
+        }
+        if (d.objectStoreNames.contains('entries')) {
+          const es = tx.objectStore('entries');
+          if (!es.indexNames.contains('companyId')) es.createIndex('companyId', 'companyId');
+        }
+      }
     };
     req.onsuccess = () => { db = req.result; document.getElementById('db-status').className = 'ok'; document.getElementById('db-status').textContent = t('dbOk'); resolve(db); };
   });
@@ -68,71 +109,167 @@ function dbPut(store, data) { return new Promise((res, rej) => { const r = dbTx(
 function dbDelete(store, key) { return new Promise((res, rej) => { const r = dbTx(store, 'readwrite').delete(key); r.onsuccess = () => res(); r.onerror = () => rej(r.error); }); }
 function dbGetByIndex(store, idx, val) { return new Promise((res, rej) => { const r = dbTx(store).index(idx).getAll(val); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); }); }
 
+// ===== Company-filtered helpers =====
+async function getCompanyAccounts() { return currentCompanyId ? await dbGetByIndex('accounts', 'companyId', currentCompanyId) : await dbGetAll('accounts'); }
+async function getCompanyEntries() { return currentCompanyId ? await dbGetByIndex('entries', 'companyId', currentCompanyId) : await dbGetAll('entries'); }
+async function getCompanyRules() { return currentCompanyId ? await dbGetByIndex('rules', 'companyId', currentCompanyId) : await dbGetAll('rules'); }
+
+// ===== Multi-Company =====
+async function migrateToMultiCompany() {
+  const companies = await dbGetAll('companies');
+  if (companies.length > 0) return;
+  // Create default company from existing settings
+  const nameSetting = await dbGet('settings', 'companyName');
+  const cName = nameSetting?.value || 'Minha Empresa';
+  const companyId = await dbAdd('companies', { name: cName, cnpj: '', baseCurrency: 'BRL', fiscalMonthStart: 1, isActive: true, createdAt: new Date().toISOString() });
+  // Migrate existing accounts and entries to companyId
+  const allAccts = await dbGetAll('accounts');
+  for (const a of allAccts) { if (!a.companyId) { a.companyId = companyId; await dbPut('accounts', a); } }
+  const allEntries = await dbGetAll('entries');
+  for (const e of allEntries) { if (!e.companyId) { e.companyId = companyId; await dbPut('entries', e); } }
+  // Seed default rules for this company
+  await seedDefaultRules(companyId);
+  currentCompanyId = companyId;
+  localStorage.setItem('gl_company', String(companyId));
+}
+
+async function loadCompanySelector() {
+  const companies = await dbGetAll('companies');
+  const sel = document.getElementById('company-selector');
+  sel.innerHTML = companies.map(c => `<option value="${c.id}">${c.name}</option>`).join('');
+  if (currentCompanyId) sel.value = currentCompanyId;
+  else if (companies.length) { currentCompanyId = companies[0].id; sel.value = currentCompanyId; }
+}
+
+async function switchCompany(id) {
+  currentCompanyId = parseInt(id);
+  localStorage.setItem('gl_company', String(currentCompanyId));
+  document.getElementById('company-selector').value = currentCompanyId;
+  refreshCurrentTab();
+}
+
+// ===== Company CRUD =====
+async function loadCompanyList() {
+  const companies = await dbGetAll('companies');
+  const tbody = document.getElementById('company-list');
+  if (!tbody) return;
+  tbody.innerHTML = '';
+  for (const c of companies) {
+    const isCurrent = c.id === currentCompanyId;
+    tbody.innerHTML += `<tr${isCurrent ? ' style="background:rgba(37,99,235,.06);"' : ''}><td><strong>${c.name}</strong></td><td>${c.cnpj || '-'}</td><td>${c.baseCurrency || 'BRL'}</td><td>${isCurrent ? '<span class="status-badge status-posted">' + t('active') + '</span>' : ''}</td><td>${!isCurrent ? `<button class="btn btn-sm btn-danger" onclick="deleteCompany(${c.id})">&times;</button>` : ''}</td></tr>`;
+  }
+}
+
+async function addCompany() {
+  const name = document.getElementById('new-company-name').value.trim();
+  const cnpj = document.getElementById('new-company-cnpj').value.trim();
+  const cur = document.getElementById('new-company-currency').value.trim().toUpperCase() || 'BRL';
+  if (!name) { toast(t('fillAllFields'), 'error'); return; }
+  const companyId = await dbAdd('companies', { name, cnpj, baseCurrency: cur, fiscalMonthStart: 1, isActive: true, createdAt: new Date().toISOString() });
+  // Seed default chart of accounts for new company
+  await seedDefaults(companyId);
+  // Seed default rules for new company
+  await seedDefaultRules(companyId);
+  document.getElementById('new-company-name').value = '';
+  document.getElementById('new-company-cnpj').value = '';
+  toast(t('companyCreated'), 'success');
+  loadCompanyList(); loadCompanySelector();
+}
+
+async function deleteCompany(id) {
+  if (!confirm(t('confirmDeleteCompany'))) return;
+  const entries = await dbGetByIndex('entries', 'companyId', id);
+  if (entries.length > 0) { toast(t('companyHasEntries'), 'error'); return; }
+  // Delete accounts for this company
+  const accts = await dbGetByIndex('accounts', 'companyId', id);
+  for (const a of accts) await dbDelete('accounts', a.id);
+  // Delete rules for this company
+  const rules = await dbGetByIndex('rules', 'companyId', id);
+  for (const r of rules) await dbDelete('rules', r.id);
+  await dbDelete('companies', id);
+  toast(t('companyDeleted')); loadCompanyList(); loadCompanySelector();
+}
+
+// ===== Auto-Accounting Rules =====
+async function seedDefaultRules(companyId) {
+  const existing = await dbGetByIndex('rules', 'companyId', companyId);
+  if (existing.length > 0) return;
+  const defaults = [
+    { name: 'Pagamento Fornecedor', transactionType: 'pagamento', debitCode: '2.1.1.01', creditCode: '1.1.1.02' },
+    { name: 'Recebimento Cliente', transactionType: 'recebimento', debitCode: '1.1.1.02', creditCode: '1.1.2.01' },
+    { name: 'Venda de Mercadoria', transactionType: 'venda', debitCode: '1.1.2.01', creditCode: '4.1.1.01' },
+    { name: 'Compra de Mercadoria', transactionType: 'compra', debitCode: '1.1.3.01', creditCode: '2.1.1.01' },
+    { name: 'Despesa Geral', transactionType: 'despesa', debitCode: '6.1.1.05', creditCode: '1.1.1.01' },
+    { name: 'Pagamento Salario', transactionType: 'salario', debitCode: '6.1.1.01', creditCode: '1.1.1.02' },
+    { name: 'Pagamento Aluguel', transactionType: 'aluguel', debitCode: '6.1.1.02', creditCode: '1.1.1.02' },
+    { name: 'Despesa Bancaria', transactionType: 'bancaria', debitCode: '6.1.1.06', creditCode: '1.1.1.02' },
+    { name: 'NF-e Compra Mercadorias', transactionType: 'nfe_entrada', debitCode: '1.1.3.01', creditCode: '2.1.1.01' },
+    { name: 'NF-e Venda Mercadorias', transactionType: 'nfe_saida', debitCode: '1.1.2.01', creditCode: '4.1.1.01' },
+    { name: 'ICMS sobre Vendas', transactionType: 'nfe_icms', debitCode: '6.1.1.05', creditCode: '2.1.2.01' },
+    { name: 'PIS sobre Vendas', transactionType: 'nfe_pis', debitCode: '6.1.1.05', creditCode: '2.1.2.02' },
+    { name: 'COFINS sobre Vendas', transactionType: 'nfe_cofins', debitCode: '6.1.1.05', creditCode: '2.1.2.03' },
+  ];
+  for (const r of defaults) { r.companyId = companyId; r.isActive = true; await dbAdd('rules', r); }
+}
+
+async function getRuleForType(transactionType) {
+  const rules = await getCompanyRules();
+  return rules.find(r => r.transactionType === transactionType && r.isActive);
+}
+
+async function loadRulesList() {
+  const rules = await getCompanyRules();
+  const tbody = document.getElementById('rules-list');
+  if (!tbody) return;
+  tbody.innerHTML = '';
+  for (const r of rules) {
+    tbody.innerHTML += `<tr><td>${r.name}</td><td>${ruleTypeLabel(r.transactionType)}</td><td><code>${r.debitCode}</code></td><td><code>${r.creditCode}</code></td><td><button class="btn btn-sm btn-danger" onclick="deleteRule(${r.id})">&times;</button></td></tr>`;
+  }
+  if (!rules.length) tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:var(--text-muted);">Nenhuma regra. Clique "Adicionar" para criar.</td></tr>';
+}
+
+async function addRule() {
+  const name = document.getElementById('new-rule-name').value.trim();
+  const type = document.getElementById('new-rule-type').value;
+  const debitCode = document.getElementById('new-rule-debit').value.trim();
+  const creditCode = document.getElementById('new-rule-credit').value.trim();
+  if (!name || !debitCode || !creditCode) { toast(t('fillAllFields'), 'error'); return; }
+  await dbAdd('rules', { name, transactionType: type, debitCode, creditCode, companyId: currentCompanyId, isActive: true });
+  document.getElementById('new-rule-name').value = '';
+  document.getElementById('new-rule-debit').value = '';
+  document.getElementById('new-rule-credit').value = '';
+  toast(t('ruleCreated'), 'success'); loadRulesList();
+}
+
+async function deleteRule(id) {
+  if (!confirm(t('confirmDeleteRule'))) return;
+  await dbDelete('rules', id); toast(t('ruleDeleted')); loadRulesList();
+}
+
 // ===== Seed Defaults =====
-async function seedDefaults() {
-  const existing = await dbGetAll('accounts');
+async function seedDefaults(companyId) {
+  const cid = companyId || currentCompanyId;
+  const existing = await dbGetByIndex('accounts', 'companyId', cid);
   if (existing.length > 0) return;
   const accts = [
-    {code:'1',name:'ATIVO',type:'ativo',parentCode:'',isGroup:true,currency:'BRL',active:true},
-    {code:'1.1',name:'ATIVO CIRCULANTE',type:'ativo',parentCode:'1',isGroup:true,currency:'BRL',active:true},
-    {code:'1.1.1',name:'CAIXA E EQUIVALENTES',type:'ativo',parentCode:'1.1',isGroup:true,currency:'BRL',active:true},
-    {code:'1.1.1.01',name:'Caixa Geral',type:'ativo',parentCode:'1.1.1',isGroup:false,currency:'BRL',active:true},
-    {code:'1.1.1.02',name:'Banco c/c',type:'ativo',parentCode:'1.1.1',isGroup:false,currency:'BRL',active:true},
-    {code:'1.1.2',name:'CONTAS A RECEBER',type:'ativo',parentCode:'1.1',isGroup:true,currency:'BRL',active:true},
-    {code:'1.1.2.01',name:'Clientes Nacionais',type:'ativo',parentCode:'1.1.2',isGroup:false,currency:'BRL',active:true},
-    {code:'1.1.3',name:'ESTOQUES',type:'ativo',parentCode:'1.1',isGroup:true,currency:'BRL',active:true},
-    {code:'1.1.3.01',name:'Mercadorias para Revenda',type:'ativo',parentCode:'1.1.3',isGroup:false,currency:'BRL',active:true},
-    {code:'1.2',name:'ATIVO NAO CIRCULANTE',type:'ativo',parentCode:'1',isGroup:true,currency:'BRL',active:true},
-    {code:'1.2.1',name:'IMOBILIZADO',type:'ativo',parentCode:'1.2',isGroup:true,currency:'BRL',active:true},
-    {code:'1.2.1.01',name:'Moveis e Utensilios',type:'ativo',parentCode:'1.2.1',isGroup:false,currency:'BRL',active:true},
-    {code:'1.2.1.02',name:'Equipamentos de Informatica',type:'ativo',parentCode:'1.2.1',isGroup:false,currency:'BRL',active:true},
-    {code:'2',name:'PASSIVO',type:'passivo',parentCode:'',isGroup:true,currency:'BRL',active:true},
-    {code:'2.1',name:'PASSIVO CIRCULANTE',type:'passivo',parentCode:'2',isGroup:true,currency:'BRL',active:true},
-    {code:'2.1.1',name:'FORNECEDORES',type:'passivo',parentCode:'2.1',isGroup:true,currency:'BRL',active:true},
-    {code:'2.1.1.01',name:'Fornecedores Nacionais',type:'passivo',parentCode:'2.1.1',isGroup:false,currency:'BRL',active:true},
-    {code:'2.1.2',name:'OBRIGACOES FISCAIS',type:'passivo',parentCode:'2.1',isGroup:true,currency:'BRL',active:true},
-    {code:'2.1.2.01',name:'ICMS a Pagar',type:'passivo',parentCode:'2.1.2',isGroup:false,currency:'BRL',active:true},
-    {code:'2.1.2.02',name:'PIS a Pagar',type:'passivo',parentCode:'2.1.2',isGroup:false,currency:'BRL',active:true},
-    {code:'2.1.2.03',name:'COFINS a Pagar',type:'passivo',parentCode:'2.1.2',isGroup:false,currency:'BRL',active:true},
-    {code:'2.1.3',name:'OBRIGACOES TRABALHISTAS',type:'passivo',parentCode:'2.1',isGroup:true,currency:'BRL',active:true},
-    {code:'2.1.3.01',name:'Salarios a Pagar',type:'passivo',parentCode:'2.1.3',isGroup:false,currency:'BRL',active:true},
-    {code:'2.2',name:'PASSIVO NAO CIRCULANTE',type:'passivo',parentCode:'2',isGroup:true,currency:'BRL',active:true},
-    {code:'2.2.1',name:'EMPRESTIMOS LP',type:'passivo',parentCode:'2.2',isGroup:true,currency:'BRL',active:true},
-    {code:'2.2.1.01',name:'Emprestimos Bancarios LP',type:'passivo',parentCode:'2.2.1',isGroup:false,currency:'BRL',active:true},
-    {code:'3',name:'PATRIMONIO LIQUIDO',type:'pl',parentCode:'',isGroup:true,currency:'BRL',active:true},
-    {code:'3.1',name:'CAPITAL SOCIAL',type:'pl',parentCode:'3',isGroup:true,currency:'BRL',active:true},
-    {code:'3.1.1.01',name:'Capital Subscrito',type:'pl',parentCode:'3.1',isGroup:false,currency:'BRL',active:true},
-    {code:'3.2',name:'RESERVAS',type:'pl',parentCode:'3',isGroup:true,currency:'BRL',active:true},
-    {code:'3.2.1.01',name:'Reserva Legal',type:'pl',parentCode:'3.2',isGroup:false,currency:'BRL',active:true},
-    {code:'3.3',name:'LUCROS/PREJUIZOS ACUMULADOS',type:'pl',parentCode:'3',isGroup:true,currency:'BRL',active:true},
-    {code:'3.3.1.01',name:'Lucros Acumulados',type:'pl',parentCode:'3.3',isGroup:false,currency:'BRL',active:true},
-    {code:'4',name:'RECEITAS',type:'receita',parentCode:'',isGroup:true,currency:'BRL',active:true},
-    {code:'4.1',name:'RECEITA OPERACIONAL',type:'receita',parentCode:'4',isGroup:true,currency:'BRL',active:true},
-    {code:'4.1.1.01',name:'Venda de Mercadorias',type:'receita',parentCode:'4.1',isGroup:false,currency:'BRL',active:true},
-    {code:'4.1.1.02',name:'Receita de Servicos',type:'receita',parentCode:'4.1',isGroup:false,currency:'BRL',active:true},
-    {code:'4.2',name:'OUTRAS RECEITAS',type:'receita',parentCode:'4',isGroup:true,currency:'BRL',active:true},
-    {code:'4.2.1.01',name:'Receitas Financeiras',type:'receita',parentCode:'4.2',isGroup:false,currency:'BRL',active:true},
-    {code:'5',name:'CUSTOS',type:'custo',parentCode:'',isGroup:true,currency:'BRL',active:true},
-    {code:'5.1',name:'CUSTO MERCADORIA VENDIDA',type:'custo',parentCode:'5',isGroup:true,currency:'BRL',active:true},
-    {code:'5.1.1.01',name:'CMV Mercadorias',type:'custo',parentCode:'5.1',isGroup:false,currency:'BRL',active:true},
-    {code:'6',name:'DESPESAS',type:'despesa',parentCode:'',isGroup:true,currency:'BRL',active:true},
-    {code:'6.1',name:'DESPESAS OPERACIONAIS',type:'despesa',parentCode:'6',isGroup:true,currency:'BRL',active:true},
-    {code:'6.1.1.01',name:'Salarios e Ordenados',type:'despesa',parentCode:'6.1',isGroup:false,currency:'BRL',active:true},
-    {code:'6.1.1.02',name:'Aluguel',type:'despesa',parentCode:'6.1',isGroup:false,currency:'BRL',active:true},
-    {code:'6.1.1.03',name:'Energia Eletrica',type:'despesa',parentCode:'6.1',isGroup:false,currency:'BRL',active:true},
-    {code:'6.1.1.04',name:'Depreciacoes',type:'despesa',parentCode:'6.1',isGroup:false,currency:'BRL',active:true},
-    {code:'6.1.1.05',name:'Material de Escritorio',type:'despesa',parentCode:'6.1',isGroup:false,currency:'BRL',active:true},
-    {code:'6.1.1.06',name:'Despesas Bancarias',type:'despesa',parentCode:'6.1',isGroup:false,currency:'BRL',active:true},
-    {code:'6.2',name:'DESPESAS FINANCEIRAS',type:'despesa',parentCode:'6',isGroup:true,currency:'BRL',active:true},
-    {code:'6.2.1.01',name:'Juros Pagos',type:'despesa',parentCode:'6.2',isGroup:false,currency:'BRL',active:true},
+    {code:'1',name:'ATIVO',type:'ativo',parentCode:'',isGroup:true},{code:'1.1',name:'ATIVO CIRCULANTE',type:'ativo',parentCode:'1',isGroup:true},{code:'1.1.1',name:'CAIXA E EQUIVALENTES',type:'ativo',parentCode:'1.1',isGroup:true},{code:'1.1.1.01',name:'Caixa Geral',type:'ativo',parentCode:'1.1.1',isGroup:false},{code:'1.1.1.02',name:'Banco c/c',type:'ativo',parentCode:'1.1.1',isGroup:false},{code:'1.1.2',name:'CONTAS A RECEBER',type:'ativo',parentCode:'1.1',isGroup:true},{code:'1.1.2.01',name:'Clientes Nacionais',type:'ativo',parentCode:'1.1.2',isGroup:false},{code:'1.1.3',name:'ESTOQUES',type:'ativo',parentCode:'1.1',isGroup:true},{code:'1.1.3.01',name:'Mercadorias para Revenda',type:'ativo',parentCode:'1.1.3',isGroup:false},{code:'1.2',name:'ATIVO NAO CIRCULANTE',type:'ativo',parentCode:'1',isGroup:true},{code:'1.2.1',name:'IMOBILIZADO',type:'ativo',parentCode:'1.2',isGroup:true},{code:'1.2.1.01',name:'Moveis e Utensilios',type:'ativo',parentCode:'1.2.1',isGroup:false},{code:'1.2.1.02',name:'Equipamentos de Informatica',type:'ativo',parentCode:'1.2.1',isGroup:false},
+    {code:'2',name:'PASSIVO',type:'passivo',parentCode:'',isGroup:true},{code:'2.1',name:'PASSIVO CIRCULANTE',type:'passivo',parentCode:'2',isGroup:true},{code:'2.1.1',name:'FORNECEDORES',type:'passivo',parentCode:'2.1',isGroup:true},{code:'2.1.1.01',name:'Fornecedores Nacionais',type:'passivo',parentCode:'2.1.1',isGroup:false},{code:'2.1.2',name:'OBRIGACOES FISCAIS',type:'passivo',parentCode:'2.1',isGroup:true},{code:'2.1.2.01',name:'ICMS a Pagar',type:'passivo',parentCode:'2.1.2',isGroup:false},{code:'2.1.2.02',name:'PIS a Pagar',type:'passivo',parentCode:'2.1.2',isGroup:false},{code:'2.1.2.03',name:'COFINS a Pagar',type:'passivo',parentCode:'2.1.2',isGroup:false},{code:'2.1.3',name:'OBRIGACOES TRABALHISTAS',type:'passivo',parentCode:'2.1',isGroup:true},{code:'2.1.3.01',name:'Salarios a Pagar',type:'passivo',parentCode:'2.1.3',isGroup:false},{code:'2.2',name:'PASSIVO NAO CIRCULANTE',type:'passivo',parentCode:'2',isGroup:true},{code:'2.2.1',name:'EMPRESTIMOS LP',type:'passivo',parentCode:'2.2',isGroup:true},{code:'2.2.1.01',name:'Emprestimos Bancarios LP',type:'passivo',parentCode:'2.2.1',isGroup:false},
+    {code:'3',name:'PATRIMONIO LIQUIDO',type:'pl',parentCode:'',isGroup:true},{code:'3.1',name:'CAPITAL SOCIAL',type:'pl',parentCode:'3',isGroup:true},{code:'3.1.1.01',name:'Capital Subscrito',type:'pl',parentCode:'3.1',isGroup:false},{code:'3.2',name:'RESERVAS',type:'pl',parentCode:'3',isGroup:true},{code:'3.2.1.01',name:'Reserva Legal',type:'pl',parentCode:'3.2',isGroup:false},{code:'3.3',name:'LUCROS/PREJUIZOS ACUMULADOS',type:'pl',parentCode:'3',isGroup:true},{code:'3.3.1.01',name:'Lucros Acumulados',type:'pl',parentCode:'3.3',isGroup:false},
+    {code:'4',name:'RECEITAS',type:'receita',parentCode:'',isGroup:true},{code:'4.1',name:'RECEITA OPERACIONAL',type:'receita',parentCode:'4',isGroup:true},{code:'4.1.1.01',name:'Venda de Mercadorias',type:'receita',parentCode:'4.1',isGroup:false},{code:'4.1.1.02',name:'Receita de Servicos',type:'receita',parentCode:'4.1',isGroup:false},{code:'4.2',name:'OUTRAS RECEITAS',type:'receita',parentCode:'4',isGroup:true},{code:'4.2.1.01',name:'Receitas Financeiras',type:'receita',parentCode:'4.2',isGroup:false},
+    {code:'5',name:'CUSTOS',type:'custo',parentCode:'',isGroup:true},{code:'5.1',name:'CUSTO MERCADORIA VENDIDA',type:'custo',parentCode:'5',isGroup:true},{code:'5.1.1.01',name:'CMV Mercadorias',type:'custo',parentCode:'5.1',isGroup:false},
+    {code:'6',name:'DESPESAS',type:'despesa',parentCode:'',isGroup:true},{code:'6.1',name:'DESPESAS OPERACIONAIS',type:'despesa',parentCode:'6',isGroup:true},{code:'6.1.1.01',name:'Salarios e Ordenados',type:'despesa',parentCode:'6.1',isGroup:false},{code:'6.1.1.02',name:'Aluguel',type:'despesa',parentCode:'6.1',isGroup:false},{code:'6.1.1.03',name:'Energia Eletrica',type:'despesa',parentCode:'6.1',isGroup:false},{code:'6.1.1.04',name:'Depreciacoes',type:'despesa',parentCode:'6.1',isGroup:false},{code:'6.1.1.05',name:'Material de Escritorio',type:'despesa',parentCode:'6.1',isGroup:false},{code:'6.1.1.06',name:'Despesas Bancarias',type:'despesa',parentCode:'6.1',isGroup:false},{code:'6.2',name:'DESPESAS FINANCEIRAS',type:'despesa',parentCode:'6',isGroup:true},{code:'6.2.1.01',name:'Juros Pagos',type:'despesa',parentCode:'6.2',isGroup:false},
   ];
-  for (const a of accts) await dbAdd('accounts', a);
-  await dbAdd('currencies', { code:'BRL', name:'Real Brasileiro', rate:1, updatedAt:today() });
-  await dbAdd('currencies', { code:'USD', name:'Dolar Americano', rate:5.80, updatedAt:today() });
-  await dbAdd('currencies', { code:'EUR', name:'Euro', rate:6.30, updatedAt:today() });
-  await dbPut('settings', { key:'companyName', value:'Minha Empresa' });
-  await dbPut('settings', { key:'fiscalMonth', value:'1' });
-  await dbPut('settings', { key:'baseCurrency', value:'BRL' });
+  for (const a of accts) { a.companyId = cid; a.currency = 'BRL'; a.active = true; await dbAdd('accounts', a); }
+  // Only seed currencies/settings for first company
+  const allCur = await dbGetAll('currencies');
+  if (allCur.length === 0) {
+    await dbAdd('currencies', { code:'BRL', name:'Real Brasileiro', rate:1, updatedAt:today() });
+    await dbAdd('currencies', { code:'USD', name:'Dolar Americano', rate:5.80, updatedAt:today() });
+    await dbAdd('currencies', { code:'EUR', name:'Euro', rate:6.30, updatedAt:today() });
+    await dbPut('settings', { key:'companyName', value:'Minha Empresa' });
+    await dbPut('settings', { key:'fiscalMonth', value:'1' });
+    await dbPut('settings', { key:'baseCurrency', value:'BRL' });
+  }
 }
 
 // ===== Tab Navigation =====
@@ -146,7 +283,7 @@ function switchTab(tabId) {
   if (tabId === 'dashboard') loadDashboard();
   if (tabId === 'accounts') loadAccountTree();
   if (tabId === 'journal') { loadAccountSelectors(); loadEntries(); }
-  if (tabId === 'settings') { loadSettings(); loadUserManagement(); }
+  if (tabId === 'settings') { loadSettings(); loadUserManagement(); loadCompanyList(); loadRulesList(); }
 }
 function refreshCurrentTab() {
   const active = document.querySelector('.tab-btn.active');
@@ -168,7 +305,7 @@ document.querySelectorAll('.sub-tab-btn').forEach(btn => {
 
 // ===== Chart of Accounts =====
 async function loadAccountTree() {
-  allAccounts = await dbGetAll('accounts');
+  allAccounts = await getCompanyAccounts();
   allAccounts.sort((a, b) => a.code.localeCompare(b.code));
   const filterType = document.getElementById('acct-filter-type').value;
   const search = document.getElementById('acct-search').value.toLowerCase();
@@ -220,7 +357,7 @@ function showAccountModal(acct) {
 function closeAccountModal() { document.getElementById('account-modal').classList.remove('show'); }
 async function saveAccount() {
   const id = document.getElementById('acct-edit-id').value;
-  const data = { code: document.getElementById('acct-code').value.trim(), name: document.getElementById('acct-name').value.trim(), type: document.getElementById('acct-type').value, parentCode: document.getElementById('acct-parent').value.trim(), isGroup: document.getElementById('acct-isgroup').value === 'true', currency: 'BRL', active: true };
+  const data = { code: document.getElementById('acct-code').value.trim(), name: document.getElementById('acct-name').value.trim(), type: document.getElementById('acct-type').value, parentCode: document.getElementById('acct-parent').value.trim(), isGroup: document.getElementById('acct-isgroup').value === 'true', currency: 'BRL', active: true, companyId: currentCompanyId };
   if (!data.code || !data.name) { toast(t('codeNameRequired'), 'error'); return; }
   try {
     if (id) { data.id = parseInt(id); await dbPut('accounts', data); toast(t('accountUpdated')); }
@@ -242,7 +379,7 @@ function buildAccountOptions() {
   return allAccounts.filter(a => !a.isGroup && a.active).map(a => `<option value="${a.id}" data-code="${a.code}">${a.code} - ${a.name}</option>`).join('');
 }
 async function loadAccountSelectors() {
-  allAccounts = await dbGetAll('accounts');
+  allAccounts = await getCompanyAccounts();
   allAccounts.sort((a, b) => a.code.localeCompare(b.code));
   const currencies = await dbGetAll('currencies');
   const curSel = document.getElementById('je-currency');
@@ -299,13 +436,12 @@ async function saveJE(status) {
   if (rows.length < 2) { toast(t('min2LinesWithValue'), 'error'); return; }
   if (Math.abs(totalD - totalC) > 0.005) { toast(t('entryNotBalanced'), 'error'); return; }
   const editId = document.getElementById('je-edit-id').value;
-  const entryData = { date, description: desc, reference: document.getElementById('je-ref').value.trim(), source: 'manual', currency, exchangeRate: rate, status, createdAt: new Date().toISOString() };
+  const entryData = { date, description: desc, reference: document.getElementById('je-ref').value.trim(), source: 'manual', currency, exchangeRate: rate, status, companyId: currentCompanyId, createdAt: new Date().toISOString() };
   try {
     let entryId;
     if (editId) { entryData.id = parseInt(editId); await dbPut('entries', entryData); entryId = entryData.id; const old = await dbGetByIndex('lines', 'entryId', entryId); for (const o of old) await dbDelete('lines', o.id); }
     else { entryId = await dbAdd('entries', entryData); }
     for (const row of rows) { row.entryId = entryId; await dbAdd('lines', row); }
-    // Attachments
     const attInput = document.getElementById('je-attachment');
     if (attInput.files) { for (const f of attInput.files) await addAttachmentToEntry(entryId, f); }
     toast(status === 'posted' ? t('entryPosted') : t('draftSaved'), 'success');
@@ -323,7 +459,7 @@ function resetJEForm() {
   addJELine(); addJELine(); updateJETotals();
 }
 async function loadEntries() {
-  const entries = await dbGetAll('entries'); const allLines = await dbGetAll('lines');
+  const entries = await getCompanyEntries(); const allLines = await dbGetAll('lines');
   const from = document.getElementById('je-filter-from').value;
   const to = document.getElementById('je-filter-to').value;
   const search = document.getElementById('je-filter-search').value.toLowerCase();
@@ -371,7 +507,7 @@ async function reverseEntry() {
   const entry = await dbGet('entries', currentViewEntryId);
   const lines = await dbGetByIndex('lines', 'entryId', currentViewEntryId);
   entry.status = 'reversed'; await dbPut('entries', entry);
-  const revId = await dbAdd('entries', { date: today(), description: 'ESTORNO: ' + entry.description, reference: 'EST-' + entry.id, source: 'manual', currency: entry.currency, exchangeRate: entry.exchangeRate, status: 'posted', createdAt: new Date().toISOString() });
+  const revId = await dbAdd('entries', { date: today(), description: 'ESTORNO: ' + entry.description, reference: 'EST-' + entry.id, source: 'manual', currency: entry.currency, exchangeRate: entry.exchangeRate, status: 'posted', companyId: currentCompanyId, createdAt: new Date().toISOString() });
   for (const l of lines) { await dbAdd('lines', { entryId: revId, accountId: l.accountId, accountCode: l.accountCode, debit: l.credit, credit: l.debit, debitBase: l.creditBase, creditBase: l.debitBase, memo: 'Estorno' }); }
   toast(t('entryReversed'), 'success'); closeEntryModal(); loadEntries();
 }
@@ -396,9 +532,9 @@ async function editEntry(id) {
 
 // ===== Dashboard =====
 async function loadDashboard() {
-  allAccounts = await dbGetAll('accounts');
+  allAccounts = await getCompanyAccounts();
   const allLines = await dbGetAll('lines');
-  const entries = await dbGetAll('entries');
+  const entries = await getCompanyEntries();
   const postedIds = new Set(entries.filter(e => e.status === 'posted').map(e => e.id));
   const posted = allLines.filter(l => postedIds.has(l.entryId));
   const bal = { ativo: 0, passivo: 0, pl: 0, receita: 0, custo: 0, despesa: 0 };
@@ -430,8 +566,8 @@ async function loadDashboard() {
 
 // ===== Reports =====
 async function getReportData(from, to) {
-  allAccounts = await dbGetAll('accounts'); allAccounts.sort((a, b) => a.code.localeCompare(b.code));
-  const entries = await dbGetAll('entries'); const allLines = await dbGetAll('lines');
+  allAccounts = await getCompanyAccounts(); allAccounts.sort((a, b) => a.code.localeCompare(b.code));
+  const entries = await getCompanyEntries(); const allLines = await dbGetAll('lines');
   const postedIds = new Set(entries.filter(e => e.status === 'posted' && (!from || e.date >= from) && (!to || e.date <= to)).map(e => e.id));
   const posted = allLines.filter(l => postedIds.has(l.entryId));
   const acctBal = {};
@@ -447,6 +583,7 @@ async function generateReport() {
   const period = (from || '...') + ' - ' + (to || '...');
   generateBalancete(data, company, period); generateDRE(data, company, period);
   generateBalanco(data, company, period); generateFluxoCaixa(data, company, period);
+  generateConsolidated(from, to);
 }
 function generateBalancete(data, company, period) {
   let totalD = 0, totalC = 0, rows = '';
@@ -479,13 +616,47 @@ function generateFluxoCaixa(data, company, period) {
   const gb = data.getBalance; const rev = gb('4'); const cost = gb('5'); const exp = gb('6');
   const ni = (rev.credit - rev.debit) - (cost.debit - cost.credit) - (exp.debit - exp.credit);
   const dep = gb('6.1.1.04'); const dv = dep.debit - dep.credit;
-  const cl = gb('1.1.2'); const es = gb('1.1.3'); const fo = gb('2.1.1'); const ob = gb('2.1.2'); const tr = gb('2.1.3');
-  const op = ni + dv + (-(cl.debit - cl.credit)) + (-(es.debit - es.credit)) + (fo.credit - fo.debit) + (ob.credit - ob.debit) + (tr.credit - tr.debit);
+  const cl = gb('1.1.2'); const es = gb('1.1.3'); const fo = gb('2.1.1'); const ob = gb('2.1.2'); const tr2 = gb('2.1.3');
+  const op = ni + dv + (-(cl.debit - cl.credit)) + (-(es.debit - es.credit)) + (fo.credit - fo.debit) + (ob.credit - ob.debit) + (tr2.credit - tr2.debit);
   const im = gb('1.2'); const inv = -(im.debit - im.credit) + dv;
   const em = gb('2.2'); const ca = gb('3.1'); const fin = (em.credit - em.debit) + (ca.credit - ca.debit);
   const tot = op + inv + fin;
-  document.getElementById('rpt-fluxo-content').innerHTML = `<div class="report-header"><h2>${company}</h2><p>${t('cashFlowTitle')} — ${period}</p></div><table><thead><tr><th>${t('description')}</th><th class="num">${t('valueBRL')}</th></tr></thead><tbody><tr class="report-section"><td colspan="2"><h3>${t('operatingActivities')}</h3></td></tr><tr><td class="indent-1">${t('netResultPeriod')}</td><td class="num">${fmt(ni)}</td></tr><tr><td class="indent-1">${t('depreciation')}</td><td class="num">${fmt(dv)}</td></tr><tr><td class="indent-1">${t('clientsVariation')}</td><td class="num">${fmt(-(cl.debit - cl.credit))}</td></tr><tr><td class="indent-1">${t('inventoryVariation')}</td><td class="num">${fmt(-(es.debit - es.credit))}</td></tr><tr><td class="indent-1">${t('suppliersVariation')}</td><td class="num">${fmt(fo.credit - fo.debit)}</td></tr><tr><td class="indent-1">${t('taxVariation')}</td><td class="num">${fmt(ob.credit - ob.debit)}</td></tr><tr><td class="indent-1">${t('laborVariation')}</td><td class="num">${fmt(tr.credit - tr.debit)}</td></tr><tr class="report-total"><td>${t('operatingCash')}</td><td class="num">${fmt(op)}</td></tr><tr class="report-section"><td colspan="2"><h3>${t('investingActivities')}</h3></td></tr><tr><td class="indent-1">${t('fixedAssetVariation')}</td><td class="num">${fmt(inv)}</td></tr><tr class="report-total"><td>${t('investingCash')}</td><td class="num">${fmt(inv)}</td></tr><tr class="report-section"><td colspan="2"><h3>${t('financingActivities')}</h3></td></tr><tr><td class="indent-1">${t('loansVariation')}</td><td class="num">${fmt(em.credit - em.debit)}</td></tr><tr><td class="indent-1">${t('capitalVariation')}</td><td class="num">${fmt(ca.credit - ca.debit)}</td></tr><tr class="report-total"><td>${t('financingCash')}</td><td class="num">${fmt(fin)}</td></tr><tr class="report-grand-total"><td>${t('netCashVariation')}</td><td class="num" style="color:${tot>=0?'var(--success)':'var(--danger)'}">${fmt(tot)}</td></tr></tbody></table><div class="btn-group no-print" style="margin-top:12px;"><button class="btn btn-sm" onclick="printReport('rpt-fluxo')">${t('print')}</button><button class="btn btn-sm" onclick="exportReportCSV('fluxo')">${t('exportCSV')}</button></div>`;
+  document.getElementById('rpt-fluxo-content').innerHTML = `<div class="report-header"><h2>${company}</h2><p>${t('cashFlowTitle')} — ${period}</p></div><table><thead><tr><th>${t('description')}</th><th class="num">${t('valueBRL')}</th></tr></thead><tbody><tr class="report-section"><td colspan="2"><h3>${t('operatingActivities')}</h3></td></tr><tr><td class="indent-1">${t('netResultPeriod')}</td><td class="num">${fmt(ni)}</td></tr><tr><td class="indent-1">${t('depreciation')}</td><td class="num">${fmt(dv)}</td></tr><tr><td class="indent-1">${t('clientsVariation')}</td><td class="num">${fmt(-(cl.debit - cl.credit))}</td></tr><tr><td class="indent-1">${t('inventoryVariation')}</td><td class="num">${fmt(-(es.debit - es.credit))}</td></tr><tr><td class="indent-1">${t('suppliersVariation')}</td><td class="num">${fmt(fo.credit - fo.debit)}</td></tr><tr><td class="indent-1">${t('taxVariation')}</td><td class="num">${fmt(ob.credit - ob.debit)}</td></tr><tr><td class="indent-1">${t('laborVariation')}</td><td class="num">${fmt(tr2.credit - tr2.debit)}</td></tr><tr class="report-total"><td>${t('operatingCash')}</td><td class="num">${fmt(op)}</td></tr><tr class="report-section"><td colspan="2"><h3>${t('investingActivities')}</h3></td></tr><tr><td class="indent-1">${t('fixedAssetVariation')}</td><td class="num">${fmt(inv)}</td></tr><tr class="report-total"><td>${t('investingCash')}</td><td class="num">${fmt(inv)}</td></tr><tr class="report-section"><td colspan="2"><h3>${t('financingActivities')}</h3></td></tr><tr><td class="indent-1">${t('loansVariation')}</td><td class="num">${fmt(em.credit - em.debit)}</td></tr><tr><td class="indent-1">${t('capitalVariation')}</td><td class="num">${fmt(ca.credit - ca.debit)}</td></tr><tr class="report-total"><td>${t('financingCash')}</td><td class="num">${fmt(fin)}</td></tr><tr class="report-grand-total"><td>${t('netCashVariation')}</td><td class="num" style="color:${tot>=0?'var(--success)':'var(--danger)'}">${fmt(tot)}</td></tr></tbody></table><div class="btn-group no-print" style="margin-top:12px;"><button class="btn btn-sm" onclick="printReport('rpt-fluxo')">${t('print')}</button><button class="btn btn-sm" onclick="exportReportCSV('fluxo')">${t('exportCSV')}</button></div>`;
 }
+
+// ===== Consolidated Report =====
+async function generateConsolidated(from, to) {
+  const companies = await dbGetAll('companies');
+  if (companies.length < 2) {
+    document.getElementById('rpt-consolidated-content').innerHTML = `<p style="color:var(--text-muted);text-align:center;">Consolidado requer pelo menos 2 empresas cadastradas.</p>`;
+    return;
+  }
+  const allLines = await dbGetAll('lines');
+  const allEntriesDB = await dbGetAll('entries');
+  const allAccountsDB = await dbGetAll('accounts');
+  const period = (from || '...') + ' - ' + (to || '...');
+  let rows = '';
+  let grandTotals = { ativo: 0, passivo: 0, pl: 0, receita: 0, custo: 0, despesa: 0 };
+  for (const company of companies) {
+    const cAccounts = allAccountsDB.filter(a => a.companyId === company.id);
+    const cEntries = allEntriesDB.filter(e => e.companyId === company.id && e.status === 'posted' && (!from || e.date >= from) && (!to || e.date <= to));
+    const postedIds = new Set(cEntries.map(e => e.id));
+    const cLines = allLines.filter(l => postedIds.has(l.entryId));
+    const bal = { ativo: 0, passivo: 0, pl: 0, receita: 0, custo: 0, despesa: 0 };
+    for (const l of cLines) {
+      const acct = cAccounts.find(a => a.id === l.accountId);
+      if (!acct) continue;
+      const n = accountNature(acct.type);
+      bal[acct.type] += n === 'debit' ? (l.debitBase - l.creditBase) : (l.creditBase - l.debitBase);
+    }
+    const ni = bal.receita - bal.custo - bal.despesa;
+    for (const k of Object.keys(grandTotals)) grandTotals[k] += bal[k];
+    rows += `<tr><td><strong>${company.name}</strong></td><td class="num">${fmt(bal.ativo)}</td><td class="num">${fmt(bal.passivo)}</td><td class="num">${fmt(bal.pl)}</td><td class="num">${fmt(bal.receita)}</td><td class="num">${fmt(bal.custo + bal.despesa)}</td><td class="num" style="color:${ni>=0?'var(--success)':'var(--danger)'}">${fmt(ni)}</td></tr>`;
+  }
+  const gni = grandTotals.receita - grandTotals.custo - grandTotals.despesa;
+  document.getElementById('rpt-consolidated-content').innerHTML = `<div class="report-header"><h2>${t('consolidatedTitle')}</h2><p>${t('allCompanies')} — ${period}</p></div><div class="table-wrap"><table><thead><tr><th>${t('company')}</th><th class="num">${t('totalAssets')}</th><th class="num">${t('totalLiabilities')}</th><th class="num">${t('equity')}</th><th class="num">${t('revenue')}</th><th class="num">${t('costsExpenses')}</th><th class="num">${t('netIncome')}</th></tr></thead><tbody>${rows}</tbody><tfoot><tr class="report-grand-total"><td>${t('total')}</td><td class="num">${fmt(grandTotals.ativo)}</td><td class="num">${fmt(grandTotals.passivo)}</td><td class="num">${fmt(grandTotals.pl)}</td><td class="num">${fmt(grandTotals.receita)}</td><td class="num">${fmt(grandTotals.custo + grandTotals.despesa)}</td><td class="num" style="color:${gni>=0?'var(--success)':'var(--danger)'}">${fmt(gni)}</td></tr></tfoot></table></div><div class="btn-group no-print" style="margin-top:12px;"><button class="btn btn-sm" onclick="printReport('rpt-consolidated')">${t('print')}</button><button class="btn btn-sm" onclick="exportReportCSV('consolidated')">${t('exportCSV')}</button></div>`;
+}
+
 function printReport(id) { document.getElementById('tab-reports').classList.add('printing'); window.print(); document.getElementById('tab-reports').classList.remove('printing'); }
 function exportReportCSV(name) {
   const table = document.querySelector('#rpt-' + name + '-content table');
@@ -512,8 +683,7 @@ function showCSVPreview() {
   document.getElementById('csv-preview').style.display = 'block';
   const fields = [t('date'), t('description'), t('debitAccount'), t('creditAccount'), t('value'), t('currency')];
   const ids = ['Data', 'Descricao', 'Conta_Debito', 'Conta_Credito', 'Valor', 'Moeda'];
-  const mapping = document.getElementById('csv-mapping');
-  mapping.innerHTML = '';
+  const mapping = document.getElementById('csv-mapping'); mapping.innerHTML = '';
   fields.forEach((f, i) => { const fg = document.createElement('div'); fg.className = 'form-group'; fg.innerHTML = `<label>${f}</label><select id="csv-map-${ids[i]}"><option value="">${t('ignore')}</option>${csvHeaders.map(h => `<option value="${h}">${h}</option>`).join('')}</select>`; mapping.appendChild(fg); });
   const table = document.getElementById('csv-preview-table');
   let html = '<thead><tr>' + csvHeaders.map(h => `<th>${h}</th>`).join('') + '</tr></thead><tbody>';
@@ -526,7 +696,7 @@ async function executeCSVImport() {
   const gm = f => document.getElementById('csv-map-' + f)?.value || '';
   const dc = gm('Data'), desc = gm('Descricao'), dbc = gm('Conta_Debito'), crc = gm('Conta_Credito'), vc = gm('Valor'), cc = gm('Moeda');
   if (!dc || !vc || !dbc || !crc) { toast(t('mapMinFields'), 'error'); return; }
-  allAccounts = await dbGetAll('accounts'); const acctByCode = {}; for (const a of allAccounts) acctByCode[a.code] = a;
+  allAccounts = await getCompanyAccounts(); const acctByCode = {}; for (const a of allAccounts) acctByCode[a.code] = a;
   let imp = 0, err = 0;
   for (const row of csvData) {
     const date = row[dc] || ''; const d = row[desc] || 'CSV Import'; const dbCode = row[dbc]?.trim(); const crCode = row[crc]?.trim(); const amt = parseNum(row[vc]); const cur = row[cc]?.trim() || 'BRL';
@@ -534,7 +704,7 @@ async function executeCSVImport() {
     const da = acctByCode[dbCode]; const ca = acctByCode[crCode]; if (!da || !ca) { err++; continue; }
     let isoDate = date; if (date.includes('/')) { const p = date.split('/'); if (p[2]?.length === 4) isoDate = `${p[2]}-${p[1].padStart(2,'0')}-${p[0].padStart(2,'0')}`; }
     const curs = await dbGetAll('currencies'); const co = curs.find(c => c.code === cur); const rate = co ? co.rate : 1;
-    const eid = await dbAdd('entries', { date: isoDate, description: d, reference: '', source: 'csv', currency: cur, exchangeRate: rate, status: 'posted', createdAt: new Date().toISOString() });
+    const eid = await dbAdd('entries', { date: isoDate, description: d, reference: '', source: 'csv', currency: cur, exchangeRate: rate, status: 'posted', companyId: currentCompanyId, createdAt: new Date().toISOString() });
     await dbAdd('lines', { entryId: eid, accountId: da.id, accountCode: dbCode, debit: amt, credit: 0, debitBase: Math.round(amt * rate * 100) / 100, creditBase: 0, memo: '' });
     await dbAdd('lines', { entryId: eid, accountId: ca.id, accountCode: crCode, debit: 0, credit: amt, debitBase: 0, creditBase: Math.round(amt * rate * 100) / 100, memo: '' });
     imp++;
@@ -570,14 +740,14 @@ async function executeAPIImport() {
   const gm = f => document.getElementById('api-map-' + f)?.value || '';
   const dk = gm('date'), dsk = gm('description'), dbk = gm('debitAccount'), crk = gm('creditAccount'), ak = gm('amount'), ck = gm('currency');
   if (!dk || !ak || !dbk || !crk) { toast(t('mapMinFields'), 'error'); return; }
-  allAccounts = await dbGetAll('accounts'); const byCode = {}; for (const a of allAccounts) byCode[a.code] = a;
+  allAccounts = await getCompanyAccounts(); const byCode = {}; for (const a of allAccounts) byCode[a.code] = a;
   let imp = 0, err = 0;
   for (const rec of records) {
     const date = rec[dk]; const desc = rec[dsk] || 'API Import'; const dbc = String(rec[dbk]).trim(); const crc = String(rec[crk]).trim(); const amt = parseNum(rec[ak]); const cur = rec[ck] || 'BRL';
     if (!date || !amt || !dbc || !crc) { err++; continue; }
     const da = byCode[dbc]; const ca = byCode[crc]; if (!da || !ca) { err++; continue; }
     const curs = await dbGetAll('currencies'); const co = curs.find(c => c.code === cur); const rate = co ? co.rate : 1;
-    const eid = await dbAdd('entries', { date, description: desc, reference: '', source: 'api', currency: cur, exchangeRate: rate, status: 'posted', createdAt: new Date().toISOString() });
+    const eid = await dbAdd('entries', { date, description: desc, reference: '', source: 'api', currency: cur, exchangeRate: rate, status: 'posted', companyId: currentCompanyId, createdAt: new Date().toISOString() });
     await dbAdd('lines', { entryId: eid, accountId: da.id, accountCode: dbc, debit: amt, credit: 0, debitBase: Math.round(amt * rate * 100) / 100, creditBase: 0, memo: '' });
     await dbAdd('lines', { entryId: eid, accountId: ca.id, accountCode: crc, debit: 0, credit: amt, debitBase: 0, creditBase: Math.round(amt * rate * 100) / 100, memo: '' });
     imp++;
@@ -587,7 +757,7 @@ async function executeAPIImport() {
 
 // ===== Backup =====
 async function exportFullBackup() {
-  const data = { version: '2.0', exportDate: new Date().toISOString(), accounts: await dbGetAll('accounts'), entries: await dbGetAll('entries'), lines: await dbGetAll('lines'), currencies: await dbGetAll('currencies'), settings: await dbGetAll('settings'), users: await dbGetAll('users'), attachments: await dbGetAll('attachments') };
+  const data = { version: '3.0', exportDate: new Date().toISOString(), companies: await dbGetAll('companies'), accounts: await dbGetAll('accounts'), entries: await dbGetAll('entries'), lines: await dbGetAll('lines'), currencies: await dbGetAll('currencies'), settings: await dbGetAll('settings'), users: await dbGetAll('users'), attachments: await dbGetAll('attachments'), rules: await dbGetAll('rules') };
   const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
   const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'razao_geral_backup_' + today() + '.json'; a.click();
   toast(t('backupExported'), 'success');
@@ -605,7 +775,8 @@ function handleBackupFile(file) {
 }
 async function restoreBackup() {
   const data = window._backupData; if (!data) return;
-  for (const store of ['accounts', 'entries', 'lines', 'currencies', 'settings', 'users', 'attachments']) { const tx = db.transaction(store, 'readwrite'); tx.objectStore(store).clear(); await new Promise(r => { tx.oncomplete = r; }); }
+  const stores = ['accounts', 'entries', 'lines', 'currencies', 'settings', 'users', 'attachments', 'companies', 'rules'];
+  for (const store of stores) { if (db.objectStoreNames.contains(store)) { const tx = db.transaction(store, 'readwrite'); tx.objectStore(store).clear(); await new Promise(r => { tx.oncomplete = r; }); } }
   for (const a of (data.accounts || [])) await dbAdd('accounts', a);
   for (const e of (data.entries || [])) await dbAdd('entries', e);
   for (const l of (data.lines || [])) await dbAdd('lines', l);
@@ -613,8 +784,11 @@ async function restoreBackup() {
   for (const s of (data.settings || [])) await dbPut('settings', s);
   for (const u of (data.users || [])) await dbAdd('users', u);
   for (const a of (data.attachments || [])) await dbAdd('attachments', a);
+  for (const c of (data.companies || [])) await dbAdd('companies', c);
+  for (const r of (data.rules || [])) await dbAdd('rules', r);
   toast(t('backupRestored'), 'success');
-  document.getElementById('backup-preview').style.display = 'none'; switchTab('dashboard');
+  document.getElementById('backup-preview').style.display = 'none';
+  await loadCompanySelector(); switchTab('dashboard');
 }
 
 // ===== Settings =====
@@ -650,8 +824,11 @@ async function saveCurrency() {
 async function deleteCurrency(id) { if (!confirm(t('deleteCurrency'))) return; await dbDelete('currencies', id); toast(t('currencyDeleted')); loadCurrencyList(); }
 async function clearAllData() {
   if (!confirm(t('confirmClear1'))) return; if (!confirm(t('confirmClear2'))) return;
-  for (const store of ['accounts', 'entries', 'lines', 'currencies', 'settings', 'users', 'attachments']) { const tx = db.transaction(store, 'readwrite'); tx.objectStore(store).clear(); await new Promise(r => { tx.oncomplete = r; }); }
-  await seedDefaults(); toast(t('dataReset'), 'info'); switchTab('dashboard');
+  const stores = ['accounts', 'entries', 'lines', 'currencies', 'settings', 'users', 'attachments', 'companies', 'rules'];
+  for (const store of stores) { if (db.objectStoreNames.contains(store)) { const tx = db.transaction(store, 'readwrite'); tx.objectStore(store).clear(); await new Promise(r => { tx.oncomplete = r; }); } }
+  await migrateToMultiCompany();
+  await seedDefaults(currentCompanyId);
+  toast(t('dataReset'), 'info'); switchTab('dashboard');
 }
 
 // ===== NF-e Drop Zone =====
@@ -673,8 +850,16 @@ capFI.addEventListener('change', () => { if (capFI.files[0]) handleCaptureImageU
 // ===== INIT =====
 (async function init() {
   try {
+    applyTheme();
     await openDB();
-    await seedDefaults();
+    await migrateToMultiCompany();
+    // Restore company from localStorage
+    const savedCompany = localStorage.getItem('gl_company');
+    if (savedCompany) currentCompanyId = parseInt(savedCompany);
+    const companies = await dbGetAll('companies');
+    if (!currentCompanyId && companies.length) currentCompanyId = companies[0].id;
+    await seedDefaults(currentCompanyId);
+    await loadCompanySelector();
     // Set language selector
     document.getElementById('lang-selector').value = currentLang;
     translatePage();

@@ -103,7 +103,7 @@ function parseInfNFe(infNFe, q, qAll, ns) {
   };
 }
 
-function renderNFePreview(nfe) {
+async function renderNFePreview(nfe) {
   const container = document.getElementById('nfe-preview');
   container.style.display = 'block';
   const isEntrada = nfe.tpNF === '0';
@@ -146,7 +146,7 @@ function renderNFePreview(nfe) {
   `;
 
   // Render suggested entries
-  const entries = suggestNFeEntries(nfe);
+  const entries = await suggestNFeEntries(nfe);
   let entryHtml = '<table><thead><tr><th>Descricao</th><th>Debito</th><th>Credito</th><th class="num">Valor</th></tr></thead><tbody>';
   for (const e of entries) {
     entryHtml += `<tr><td>${e.description}</td><td>${e.debitCode} - ${e.debitName}</td><td>${e.creditCode} - ${e.creditName}</td><td class="num">${fmt(e.amount)}</td></tr>`;
@@ -155,37 +155,45 @@ function renderNFePreview(nfe) {
   document.getElementById('nfe-suggested-entries').innerHTML = entryHtml;
 }
 
-function suggestNFeEntries(nfe) {
+async function suggestNFeEntries(nfe) {
   const entries = [];
   const isEntrada = nfe.tpNF === '0';
 
   if (isEntrada) {
-    // Purchase NF-e
+    // Purchase NF-e — use auto-accounting rule if available
+    const ruleEntrada = await getRuleForType('nfe_entrada');
     if (nfe.vProd > 0) {
-      entries.push({ description: `NF-e ${nfe.number} - Compra Mercadorias - ${nfe.emitName}`, debitCode: '1.1.3.01', debitName: 'Mercadorias para Revenda', creditCode: '2.1.1.01', creditName: 'Fornecedores Nacionais', amount: nfe.vProd });
+      entries.push({ description: `NF-e ${nfe.number} - Compra Mercadorias - ${nfe.emitName}`, debitCode: ruleEntrada?.debitCode || '1.1.3.01', debitName: 'Mercadorias para Revenda', creditCode: ruleEntrada?.creditCode || '2.1.1.01', creditName: 'Fornecedores Nacionais', amount: nfe.vProd });
     }
     if (nfe.vICMS > 0) {
-      entries.push({ description: `NF-e ${nfe.number} - ICMS a Recuperar`, debitCode: '1.1.2.01', debitName: 'ICMS a Recuperar', creditCode: '2.1.1.01', creditName: 'Fornecedores Nacionais', amount: nfe.vICMS });
+      const r = await getRuleForType('nfe_icms');
+      entries.push({ description: `NF-e ${nfe.number} - ICMS a Recuperar`, debitCode: r?.debitCode || '1.1.2.01', debitName: 'ICMS a Recuperar', creditCode: r?.creditCode || '2.1.1.01', creditName: 'Fornecedores Nacionais', amount: nfe.vICMS });
     }
     if (nfe.vPIS > 0) {
-      entries.push({ description: `NF-e ${nfe.number} - PIS a Recuperar`, debitCode: '1.1.2.01', debitName: 'PIS a Recuperar', creditCode: '2.1.1.01', creditName: 'Fornecedores Nacionais', amount: nfe.vPIS });
+      const r = await getRuleForType('nfe_pis');
+      entries.push({ description: `NF-e ${nfe.number} - PIS a Recuperar`, debitCode: r?.debitCode || '1.1.2.01', debitName: 'PIS a Recuperar', creditCode: r?.creditCode || '2.1.1.01', creditName: 'Fornecedores Nacionais', amount: nfe.vPIS });
     }
     if (nfe.vCOFINS > 0) {
-      entries.push({ description: `NF-e ${nfe.number} - COFINS a Recuperar`, debitCode: '1.1.2.01', debitName: 'COFINS a Recuperar', creditCode: '2.1.1.01', creditName: 'Fornecedores Nacionais', amount: nfe.vCOFINS });
+      const r = await getRuleForType('nfe_cofins');
+      entries.push({ description: `NF-e ${nfe.number} - COFINS a Recuperar`, debitCode: r?.debitCode || '1.1.2.01', debitName: 'COFINS a Recuperar', creditCode: r?.creditCode || '2.1.1.01', creditName: 'Fornecedores Nacionais', amount: nfe.vCOFINS });
     }
   } else {
-    // Sale NF-e
+    // Sale NF-e — use auto-accounting rule if available
+    const ruleSaida = await getRuleForType('nfe_saida');
     if (nfe.vProd > 0) {
-      entries.push({ description: `NF-e ${nfe.number} - Venda Mercadorias - ${nfe.destName}`, debitCode: '1.1.2.01', debitName: 'Clientes Nacionais', creditCode: '4.1.1.01', creditName: 'Venda de Mercadorias', amount: nfe.vProd });
+      entries.push({ description: `NF-e ${nfe.number} - Venda Mercadorias - ${nfe.destName}`, debitCode: ruleSaida?.debitCode || '1.1.2.01', debitName: 'Clientes Nacionais', creditCode: ruleSaida?.creditCode || '4.1.1.01', creditName: 'Venda de Mercadorias', amount: nfe.vProd });
     }
     if (nfe.vICMS > 0) {
-      entries.push({ description: `NF-e ${nfe.number} - ICMS sobre Vendas`, debitCode: '6.1.1.05', debitName: 'ICMS sobre Vendas', creditCode: '2.1.2.01', creditName: 'ICMS a Pagar', amount: nfe.vICMS });
+      const r = await getRuleForType('nfe_icms');
+      entries.push({ description: `NF-e ${nfe.number} - ICMS sobre Vendas`, debitCode: r?.debitCode || '6.1.1.05', debitName: 'ICMS sobre Vendas', creditCode: r?.creditCode || '2.1.2.01', creditName: 'ICMS a Pagar', amount: nfe.vICMS });
     }
     if (nfe.vPIS > 0) {
-      entries.push({ description: `NF-e ${nfe.number} - PIS sobre Vendas`, debitCode: '6.1.1.05', debitName: 'PIS sobre Vendas', creditCode: '2.1.2.02', creditName: 'PIS a Pagar', amount: nfe.vPIS });
+      const r = await getRuleForType('nfe_pis');
+      entries.push({ description: `NF-e ${nfe.number} - PIS sobre Vendas`, debitCode: r?.debitCode || '6.1.1.05', debitName: 'PIS sobre Vendas', creditCode: r?.creditCode || '2.1.2.02', creditName: 'PIS a Pagar', amount: nfe.vPIS });
     }
     if (nfe.vCOFINS > 0) {
-      entries.push({ description: `NF-e ${nfe.number} - COFINS sobre Vendas`, debitCode: '6.1.1.05', debitName: 'COFINS sobre Vendas', creditCode: '2.1.2.03', creditName: 'COFINS a Pagar', amount: nfe.vCOFINS });
+      const r = await getRuleForType('nfe_cofins');
+      entries.push({ description: `NF-e ${nfe.number} - COFINS sobre Vendas`, debitCode: r?.debitCode || '6.1.1.05', debitName: 'COFINS sobre Vendas', creditCode: r?.creditCode || '2.1.2.03', creditName: 'COFINS a Pagar', amount: nfe.vCOFINS });
     }
   }
   return entries;
@@ -193,8 +201,8 @@ function suggestNFeEntries(nfe) {
 
 async function createNFeEntries() {
   if (!parsedNFe) return;
-  const entries = suggestNFeEntries(parsedNFe);
-  allAccounts = await dbGetAll('accounts');
+  const entries = await suggestNFeEntries(parsedNFe);
+  allAccounts = await getCompanyAccounts();
   const acctByCode = {};
   for (const a of allAccounts) acctByCode[a.code] = a;
 
@@ -209,7 +217,7 @@ async function createNFeEntries() {
       description: e.description,
       reference: 'NF-e ' + parsedNFe.number,
       source: 'xml', currency: 'BRL', exchangeRate: 1,
-      status: 'posted', createdAt: new Date().toISOString()
+      status: 'posted', companyId: currentCompanyId, createdAt: new Date().toISOString()
     });
     await dbAdd('lines', {
       entryId, accountId: debitAcct.id, accountCode: e.debitCode,

@@ -57,14 +57,14 @@ async function processWhatsAppMessage(msg) {
     }
   } else if (text) {
     // Try to parse text as transaction
-    const parsed = parseWhatsAppText(text);
+    const parsed = await parseWhatsAppText(text);
     if (parsed) {
       await createEntryFromWhatsApp(parsed, sender, timestamp, null);
     }
   }
 }
 
-function parseWhatsAppText(text) {
+async function parseWhatsAppText(text) {
   // Try patterns like:
   // "Pagamento R$ 500,00 para Fornecedor X"
   // "Venda R$ 1.000,00 cliente Y"
@@ -74,29 +74,41 @@ function parseWhatsAppText(text) {
   if (!amount) return null;
 
   let description = text.slice(0, 100);
-  let debitCode, creditCode;
+  let debitCode, creditCode, ruleType;
 
   if (lower.includes('pagamento') || lower.includes('pago') || lower.includes('payment')) {
-    debitCode = '2.1.1.01'; creditCode = '1.1.1.02';
+    ruleType = 'pagamento'; debitCode = '2.1.1.01'; creditCode = '1.1.1.02';
     description = 'WhatsApp: ' + description;
   } else if (lower.includes('venda') || lower.includes('sale') || lower.includes('recebimento') || lower.includes('received')) {
-    debitCode = '1.1.1.02'; creditCode = '4.1.1.01';
+    ruleType = 'venda'; debitCode = '1.1.1.02'; creditCode = '4.1.1.01';
     description = 'WhatsApp: ' + description;
   } else if (lower.includes('compra') || lower.includes('purchase') || lower.includes('comprado')) {
-    debitCode = '1.1.3.01'; creditCode = '2.1.1.01';
+    ruleType = 'compra'; debitCode = '1.1.3.01'; creditCode = '2.1.1.01';
     description = 'WhatsApp: ' + description;
   } else if (lower.includes('despesa') || lower.includes('expense') || lower.includes('gasto')) {
-    debitCode = '6.1.1.05'; creditCode = '1.1.1.01';
+    ruleType = 'despesa'; debitCode = '6.1.1.05'; creditCode = '1.1.1.01';
+    description = 'WhatsApp: ' + description;
+  } else if (lower.includes('salario') || lower.includes('salary') || lower.includes('folha')) {
+    ruleType = 'salario'; debitCode = '6.1.1.01'; creditCode = '1.1.1.02';
+    description = 'WhatsApp: ' + description;
+  } else if (lower.includes('aluguel') || lower.includes('rent')) {
+    ruleType = 'aluguel'; debitCode = '6.1.1.02'; creditCode = '1.1.1.02';
     description = 'WhatsApp: ' + description;
   } else {
     return null;
+  }
+
+  // Override with auto-accounting rule if available
+  if (ruleType) {
+    const rule = await getRuleForType(ruleType);
+    if (rule) { debitCode = rule.debitCode; creditCode = rule.creditCode; }
   }
 
   return { description, debitCode, creditCode, amount };
 }
 
 async function createEntryFromWhatsApp(entry, sender, timestamp, imageData) {
-  allAccounts = await dbGetAll('accounts');
+  allAccounts = await getCompanyAccounts();
   const debitAcct = allAccounts.find(a => a.code === entry.debitCode);
   const creditAcct = allAccounts.find(a => a.code === entry.creditCode);
   if (!debitAcct || !creditAcct) return;
@@ -106,7 +118,7 @@ async function createEntryFromWhatsApp(entry, sender, timestamp, imageData) {
     date: isoDate, description: entry.description,
     reference: 'WhatsApp - ' + sender, source: 'whatsapp',
     currency: 'BRL', exchangeRate: 1, status: 'draft',
-    createdAt: new Date().toISOString()
+    companyId: currentCompanyId, createdAt: new Date().toISOString()
   });
   await dbAdd('lines', {
     entryId, accountId: debitAcct.id, accountCode: entry.debitCode,
@@ -158,7 +170,7 @@ async function processManualPaste() {
 
   // Process text
   if (text) {
-    const parsed = parseWhatsAppText(text);
+    const parsed = await parseWhatsAppText(text);
     if (parsed) entries.push(parsed);
   }
 
@@ -193,7 +205,7 @@ async function createWAEntry(btn, hasImage) {
     return;
   }
 
-  allAccounts = await dbGetAll('accounts');
+  allAccounts = await getCompanyAccounts();
   const debitAcct = allAccounts.find(a => a.code === debitCode);
   const creditAcct = allAccounts.find(a => a.code === creditCode);
   if (!debitAcct || !creditAcct) {
@@ -204,7 +216,7 @@ async function createWAEntry(btn, hasImage) {
   const entryId = await dbAdd('entries', {
     date: today(), description: desc, reference: 'WhatsApp',
     source: 'whatsapp', currency: 'BRL', exchangeRate: 1,
-    status: 'posted', createdAt: new Date().toISOString()
+    status: 'posted', companyId: currentCompanyId, createdAt: new Date().toISOString()
   });
   await dbAdd('lines', {
     entryId, accountId: debitAcct.id, accountCode: debitCode,
@@ -233,7 +245,7 @@ async function processMessageAsEntry() {
   const text = document.getElementById('msg-entry-text').value.trim();
   if (!text) { toast(t('fillAllFields'), 'error'); return; }
 
-  const parsed = parseWhatsAppText(text);
+  const parsed = await parseWhatsAppText(text);
   const resultDiv = document.getElementById('msg-entry-result');
   resultDiv.style.display = 'block';
 

@@ -248,7 +248,7 @@ async function createEntryFromSuggestion(btn) {
     return;
   }
 
-  allAccounts = await dbGetAll('accounts');
+  allAccounts = await getCompanyAccounts();
   const debitAcct = allAccounts.find(a => a.code === debitCode);
   const creditAcct = allAccounts.find(a => a.code === creditCode);
   if (!debitAcct || !creditAcct) {
@@ -259,7 +259,7 @@ async function createEntryFromSuggestion(btn) {
   const entryId = await dbAdd('entries', {
     date: today(), description: desc, reference: '', source: 'camera',
     currency: 'BRL', exchangeRate: 1, status: 'posted',
-    createdAt: new Date().toISOString()
+    companyId: currentCompanyId, createdAt: new Date().toISOString()
   });
   await dbAdd('lines', {
     entryId, accountId: debitAcct.id, accountCode: debitCode,

@@ -13,6 +13,25 @@
   --ativo: #2563eb; --passivo: #dc2626; --pl: #7c3aed; --receita: #059669; --custo: #d97706; --despesa: #e11d48;
   --radius: 8px; --shadow: 0 1px 3px rgba(0,0,0,0.1); --shadow-lg: 0 4px 12px rgba(0,0,0,0.12);
 }
+[data-theme="dark"] {
+  --bg: #0f0f1a; --surface: #1e1e2e; --border: #2d2d3f; --text: #e4e4e7; --text-muted: #9ca3af;
+  --primary: #3b82f6; --primary-hover: #2563eb; --success: #10b981; --danger: #ef4444; --warning: #f59e0b;
+  --shadow: 0 1px 3px rgba(0,0,0,0.3); --shadow-lg: 0 4px 12px rgba(0,0,0,0.4);
+}
+[data-theme="dark"] tr:hover{background:#2a2a3e}
+[data-theme="dark"] .tree-item:hover{background:#2a2a3e}
+[data-theme="dark"] .tree-item.group{background:var(--bg)}
+[data-theme="dark"] #db-status.ok{background:#064e3b;color:#6ee7b7}
+[data-theme="dark"] #db-status.err{background:#7f1d1d;color:#fca5a5}
+[data-theme="dark"] .status-posted{background:#064e3b;color:#6ee7b7}
+[data-theme="dark"] .status-draft{background:#78350f;color:#fde68a}
+[data-theme="dark"] .status-reversed{background:#7f1d1d;color:#fca5a5}
+[data-theme="dark"] .modal-overlay{background:rgba(0,0,0,.7)}
+[data-theme="dark"] .drop-zone:hover,[data-theme="dark"] .drop-zone.dragover{background:rgba(59,130,246,.1)}
+[data-theme="dark"] .login-user-card:hover{border-color:var(--primary);box-shadow:0 0 12px rgba(59,130,246,.3)}
+.theme-toggle{background:none;border:1px solid var(--border);border-radius:var(--radius);padding:4px 10px;font-size:1.1rem;cursor:pointer;color:var(--text);line-height:1;transition:all .2s}
+.theme-toggle:hover{background:var(--bg)}
+.company-select{padding:4px 8px;border:1px solid var(--border);border-radius:var(--radius);font-size:.8rem;background:var(--surface);color:var(--text);max-width:180px}
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:var(--bg);color:var(--text);line-height:1.5}
 button{cursor:pointer;font-family:inherit;font-size:.875rem}
@@ -184,6 +203,8 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
   <h1><span>Razao</span> Geral</h1>
   <div id="header-right">
     <div id="current-user-display"></div>
+    <select class="company-select" id="company-selector" onchange="switchCompany(this.value)"></select>
+    <button class="theme-toggle" id="theme-toggle" onclick="toggleTheme()" title="Toggle theme">&#9790;</button>
     <select class="lang-select" id="lang-selector" onchange="setLanguage(this.value);refreshCurrentTab()">
       <option value="pt">Portugues</option>
       <option value="en">English</option>
@@ -462,11 +483,13 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
     <button class="sub-tab-btn" data-subtab="rpt-dre" data-i18n="incomeStatement">DRE</button>
     <button class="sub-tab-btn" data-subtab="rpt-balanco" data-i18n="balanceSheet">Balanco</button>
     <button class="sub-tab-btn" data-subtab="rpt-fluxo" data-i18n="cashFlow">Fluxo de Caixa</button>
+    <button class="sub-tab-btn" data-subtab="rpt-consolidated" data-i18n="consolidated">Consolidado</button>
   </div>
   <div id="rpt-balancete" class="sub-content active"><div class="card" id="rpt-balancete-content"><p style="color:var(--text-muted);text-align:center;" data-i18n="selectPeriodPrompt">Select period.</p></div></div>
   <div id="rpt-dre" class="sub-content"><div class="card" id="rpt-dre-content"><p style="color:var(--text-muted);text-align:center;" data-i18n="selectPeriodPrompt">Select period.</p></div></div>
   <div id="rpt-balanco" class="sub-content"><div class="card" id="rpt-balanco-content"><p style="color:var(--text-muted);text-align:center;" data-i18n="selectPeriodPrompt">Select period.</p></div></div>
   <div id="rpt-fluxo" class="sub-content"><div class="card" id="rpt-fluxo-content"><p style="color:var(--text-muted);text-align:center;" data-i18n="selectPeriodPrompt">Select period.</p></div></div>
+  <div id="rpt-consolidated" class="sub-content"><div class="card" id="rpt-consolidated-content"><p style="color:var(--text-muted);text-align:center;" data-i18n="consolidatedPrompt">Gera relatorio consolidado de todas as empresas.</p></div></div>
 </div>
 
 <!-- ===== Settings ===== -->
@@ -493,6 +516,49 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
       <div class="form-group"><label data-i18n="name">Nome</label><input type="text" id="cur-name"></div>
       <div class="form-group"><label>Taxa</label><input type="number" id="cur-rate" step="0.0001"></div>
       <div class="form-group" style="justify-content:flex-end;"><button class="btn btn-primary btn-sm" onclick="saveCurrency()" data-i18n="addCurrency">Add</button></div>
+    </div>
+  </div>
+  <!-- Company Management -->
+  <div class="card role-admin">
+    <h2 data-i18n="companyManagement">Gestao de Empresas</h2>
+    <div class="table-wrap" style="max-height:250px;margin-bottom:12px;">
+      <table><thead><tr><th data-i18n="companyName">Nome</th><th>CNPJ</th><th data-i18n="baseCurrencyLabel">Moeda</th><th data-i18n="status">Status</th><th data-i18n="actions">Acoes</th></tr></thead>
+      <tbody id="company-list"></tbody></table>
+    </div>
+    <div class="form-row">
+      <div class="form-group" style="flex:1;"><label data-i18n="companyName">Nome</label><input type="text" id="new-company-name" placeholder="Empresa XYZ Ltda"></div>
+      <div class="form-group"><label>CNPJ</label><input type="text" id="new-company-cnpj" placeholder="00.000.000/0001-00"></div>
+      <div class="form-group"><label data-i18n="baseCurrencyLabel">Moeda</label><input type="text" id="new-company-currency" value="BRL" maxlength="3" style="width:80px;text-transform:uppercase;"></div>
+      <div class="form-group" style="justify-content:flex-end;"><button class="btn btn-primary btn-sm" onclick="addCompany()" data-i18n="addCompany">Adicionar</button></div>
+    </div>
+  </div>
+  <!-- Auto-Accounting Rules -->
+  <div class="card">
+    <h2 data-i18n="autoAccountingRules">Regras de Contabilizacao Automatica</h2>
+    <p style="color:var(--text-muted);margin-bottom:12px;" data-i18n="autoRulesDesc">Definir contas padrao por tipo de transacao para contabilizacao automatica.</p>
+    <div class="table-wrap" style="max-height:350px;margin-bottom:12px;">
+      <table><thead><tr>
+        <th data-i18n="ruleName">Nome da Regra</th><th data-i18n="transactionType">Tipo</th>
+        <th data-i18n="debitAccount">Conta Debito</th><th data-i18n="creditAccount">Conta Credito</th>
+        <th data-i18n="actions">Acoes</th>
+      </tr></thead>
+      <tbody id="rules-list"></tbody></table>
+    </div>
+    <div class="form-row">
+      <div class="form-group" style="flex:1;"><label data-i18n="ruleName">Nome</label><input type="text" id="new-rule-name" placeholder="Pagamento Fornecedor"></div>
+      <div class="form-group"><label data-i18n="transactionType">Tipo</label>
+        <select id="new-rule-type">
+          <option value="pagamento">Pagamento</option><option value="recebimento">Recebimento</option>
+          <option value="venda">Venda</option><option value="compra">Compra</option>
+          <option value="despesa">Despesa</option><option value="salario">Salario</option>
+          <option value="aluguel">Aluguel</option><option value="bancaria">Desp. Bancaria</option>
+          <option value="nfe_entrada">NF-e Entrada</option><option value="nfe_saida">NF-e Saida</option>
+          <option value="nfe_icms">ICMS</option><option value="nfe_pis">PIS</option><option value="nfe_cofins">COFINS</option>
+        </select>
+      </div>
+      <div class="form-group"><label data-i18n="debitAccount">Debito</label><input type="text" id="new-rule-debit" placeholder="1.1.1.01" style="width:100px;"></div>
+      <div class="form-group"><label data-i18n="creditAccount">Credito</label><input type="text" id="new-rule-credit" placeholder="2.1.1.01" style="width:100px;"></div>
+      <div class="form-group" style="justify-content:flex-end;"><button class="btn btn-primary btn-sm" onclick="addRule()" data-i18n="addRule">Adicionar</button></div>
     </div>
   </div>
   <!-- User Management -->
